@@ -47,7 +47,7 @@ Everything is open source under AGPL-3.0 with dual-OS CI (1,000+ tests on Linux 
 
 - Core repo: https://github.com/yuatemycat/SuperGhidra
 - MCP Server (56 tools registered, 61 defined for Claude, Cursor, Antigravity): https://github.com/yuatemycat/SuperGhidraMCP
-- v1.0.7 Release: https://github.com/yuatemycat/SuperGhidra/releases/tag/v1.0.7
+- v1.0.8 Release: https://github.com/yuatemycat/SuperGhidra/releases/tag/v1.0.8
 
 Feedback welcome on the overlay conflict model and P-code lifter coverage!
 
@@ -146,7 +146,7 @@ We built **SuperGhidra** and its companion MCP server **SuperGhidraMCP** (56 reg
 **Channels:** `#tools`, `#reverse-engineering`, `#mcp`, `#announcements`
 
 ```text
-Hey everyone! Just released **SuperGhidra 1.0.7** — high-performance Python tooling and a lock-free daemon for Ghidra:
+Hey everyone! Just released **SuperGhidra 1.0.8** — high-performance Python tooling and a lock-free daemon for Ghidra:
 
 - 🚀 **Zero `.rep` Lock Contention:** Keeps a read-only Ghidra instance warm on `127.0.0.1:5073` (<50 µs IPC, SQLite L2 cache). Writes go to `ghidra_overlay.json` and sync live into an open Ghidra GUI window with `superghidra overlay-sync --watch`.
 - ⚡ **Pure-Python Metadata Recovery:** Recovers MSVC RTTI class trees, MFC `CRuntimeClass` descriptors, compiled Rust crate `.dep-v0` trees, Go `.go.buildinfo`/`pclntab` dependencies, and Unity IL2CPP `global-metadata.dat` structures without launching Ghidra.
@@ -155,7 +155,7 @@ Hey everyone! Just released **SuperGhidra 1.0.7** — high-performance Python to
 - 🔌 **56-Tool MCP Server (61 Defined):** Built-in multi-agent session forks for Claude Desktop, Cursor, Antigravity, and Claude Code.
 
 GitHub: https://github.com/yuatemycat/SuperGhidra
-Release v1.0.7: https://github.com/yuatemycat/SuperGhidra/releases/tag/v1.0.7
+Release v1.0.8: https://github.com/yuatemycat/SuperGhidra/releases/tag/v1.0.8
 Install: `pip install "superghidra[smt]"`
 ```
 
@@ -166,7 +166,7 @@ Install: `pip install "superghidra[smt]"`
 ```text
 Reverse engineering stripped enterprise binaries with Ghidra often runs into two operational bottlenecks: 5–15 second JVM startup latency per headless script invocation, and exclusive file lock collisions on .rep projects whenever the interactive Ghidra GUI is open.
 
-To solve this, I've open-sourced SuperGhidra (v1.0.7) and its companion Model Context Protocol (MCP) server:
+To solve this, I've open-sourced SuperGhidra (v1.0.8) and its companion Model Context Protocol (MCP) server:
 
 Architecture highlights:
 1. Lock-Free Oracle Daemon: Decouples binary read operations from write mutations. A persistent background daemon serves queries across an L1 shared-memory ring buffer (<50 µs roundtrip) and an L2 SQLite cache (>100k req/s).
@@ -177,7 +177,7 @@ Architecture highlights:
 The repository includes a 6-job CI matrix across Ubuntu and Windows Server with 1,000+ automated tests.
 
 Source Code: https://github.com/yuatemycat/SuperGhidra
-Release Notes: https://github.com/yuatemycat/SuperGhidra/releases/tag/v1.0.7
+Release Notes: https://github.com/yuatemycat/SuperGhidra/releases/tag/v1.0.8
 
 #ReverseEngineering #Cybersecurity #SoftwareEngineering #Ghidra #Python #Compilers #BinaryAnalysis
 ```

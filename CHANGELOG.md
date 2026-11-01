@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.8] - 2026-11-01
+
+### Fixed
+- **ARM64 Jump Table Solver Dependency Warning**: Added `_warn_missing_z3()` in `ARM64JumpTableProver` to emit a prominent warning (`logger.warning` and `UserWarning`) when `z3-solver` is absent, instructing the user to install `superghidra[smt]` rather than silently returning unproven jump tables.
+- **SMT Verify CLI Solver Exception Guard**: Handled missing `z3-solver` runtime error cleanly in `cmd_smt_verify` CLI.
+- **CI Test Suite Import Formatting**: Corrected import sorting in `tests/acceleration/test_jump_table_prover.py` to satisfy strict Ruff lint checks.
+
+### Documentation
+- **Accurate MCP Tool Counts**: Corrected tool count references from 42 to 56 registered (61 defined in SuperghidraMCP) across README and launch kit documentation.
+- **SMT Extra Requirement**: Explicitly documented `pip install "superghidra[smt]"` as required for Z3-proven switch tables across Quickstart, Installation, and Feature matrices.
+- **New Feature Coverage**: Documented compiled Rust & Go binary auditing (`superghidra crate-audit`), Unity IL2CPP metadata recovery (`superghidra il2cpp-recover`), and Z3-proven ARM64 jump table recovery.
+- **Known Limitations**: Documented Hugo Intel slice 139 missing links, Electron jump-table sweep duration (~3 minutes), static library dependency check duration (~7 seconds on Hugo), and Unity iOS public build coverage status.
+
 ## [1.0.7] - 2026-10-31
 
 ### Fixed

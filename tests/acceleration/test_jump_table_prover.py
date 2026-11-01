@@ -871,6 +871,7 @@ def test_unresolved_targets_mark_table_unproven():
 def test_missing_z3_warns_and_marks_unproven(monkeypatch):
     """30. Verifies warning and unproven return when z3 is missing."""
     import warnings
+
     from superghidra.acceleration import jump_table_prover
 
     monkeypatch.setattr(jump_table_prover, "HAS_Z3", False)
