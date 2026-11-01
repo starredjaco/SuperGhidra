@@ -16,6 +16,7 @@ from superghidra.integrations.d_lift_verifier import (
     DScoreReport,
     DScoreResult,
     GRPORewardManager,
+    AdvantageScoreNormalizer,
     InMemClangSyntaxGate,
     ReadabilityGate,
     ReadabilityMetrics,
@@ -368,6 +369,7 @@ class TestBackwardCompatibilityAndAliases:
         assert Z3SemanticEquivalenceGate is SemanticEquivalenceGate
         assert DScoreResult is DScoreReport
         assert DLiftRewardEngine is DLiFTPipeline
+        assert AdvantageScoreNormalizer is GRPORewardManager
 
     def test_root_shim_exports(self) -> None:
         from superghidra.integrations import d_lift_verifier as root_mod
@@ -376,6 +378,7 @@ class TestBackwardCompatibilityAndAliases:
         assert hasattr(root_mod, "Z3SemanticEquivalenceGate")
         assert hasattr(root_mod, "ReadabilityGate")
         assert hasattr(root_mod, "GRPORewardManager")
+        assert hasattr(root_mod, "AdvantageScoreNormalizer")
         assert hasattr(root_mod, "DScoreResult")
         assert hasattr(root_mod, "SyntaxCheckResult")
         assert hasattr(root_mod, "SemanticCheckResult")

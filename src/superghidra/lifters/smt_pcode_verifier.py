@@ -1943,6 +1943,14 @@ class SMTPcodeVerifier:
             # Default to return register x0 (offset 0)
             tracked_registers = [0]
 
+        if not tracked_registers and not check_memory:
+            return VerificationResult(
+                obligation_id=obligation_id,
+                equivalent=False,
+                status="ERROR",
+                details="Vacuous equivalence query: neither registers nor memory are tracked for verification.",
+            )
+
         # 1. Parse C code into AST
         parser = CCodeParser()
         if struct_fields:

@@ -403,6 +403,21 @@ class TestSMTPcodeVerifier(unittest.TestCase):
         self.assertIsNotNone(res.counterexample)
         self.assertIn("x1", res.counterexample)
 
+    def test_vacuous_equivalence_query_rejection(self):
+        """Verifies that empty tracked_registers with check_memory=False returns ERROR, not UNSAT."""
+        ops = [
+            PcodeOp(PcodeOpcode.INT_ADD, [Varnode(AddressSpace.REGISTER, 0, 8), Varnode(AddressSpace.REGISTER, 8, 8)], Varnode(AddressSpace.REGISTER, 0, 8)),
+        ]
+        res = self.verifier.verify_equivalence(
+            ops,
+            "return x0 + x1;",
+            check_memory=False,
+            tracked_registers=[],
+        )
+        self.assertFalse(res.equivalent)
+        self.assertEqual(res.status, "ERROR")
+        self.assertIn("Vacuous equivalence query", res.details)
+
     def test_memory_load_store_equivalence(self):
         """Verifies formal equivalence of struct member read-modify-write (TakeDamage)."""
         # P-Code:

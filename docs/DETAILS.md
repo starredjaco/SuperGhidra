@@ -27,7 +27,7 @@ SuperGhidra spans four distinct execution paths. Pick the entry point that match
 | **Recover MSVC RTTI, MFC `CRuntimeClass`, `Serialize()`, or PE/ELF/Mach-O headers** | `python -m superghidra.formats.msvc_class_recovery <binary>` or `superghidra rtti-recover <binary> -o classes.json` | **No** (standalone Python) | **No** (exports JSON, DWARF 5, Breakpad, or `.map`) |
 | **Audit compiled Rust crates (.dep-v0) or Go dependencies (.go.buildinfo / pclntab)** | `superghidra crate-audit <binary> -o audit.json` | **No** (standalone Python) | **No** (exports JSON report) |
 | **Recover Unity IL2CPP assemblies, types, methods, and string pools** | `superghidra il2cpp-recover <metadata> [--binary <bin>] -o il2cpp.json` | **No** (standalone Python) | **No** (exports JSON report) |
-| **Formally prove ARM64 switch jump tables with Z3 SMT solver** | `from superghidra.acceleration import ARM64JumpTableProver` | **No** (requires `[smt]`) | **No** (in-memory extraction / JSON) |
+| **ARM64 switch jump table recovery (checked against independent decoder)** | `from superghidra.acceleration import ARM64JumpTableProver` | **No** (standalone Python) | **No** (in-memory extraction / JSON) |
 | **Connect Claude Desktop, Cursor, or Antigravity to an open target** | MCP Server (`superghidra-mcp` via [SuperghidraMCP](https://github.com/yuatemycat/SuperGhidraMCP)) | **Yes** (connects to running daemon) | **No** (commits gated by validation + overlay sync) |
 | **Run GPU/SIMD ARM64 scans, LZ4/Zstd buffer compression, or Z3 P-code checks** | Python API / standalone modules (or MCP tools) | **No** (standalone Python / NumPy / WGPU / Z3) | **No** |
 
@@ -180,9 +180,9 @@ superghidra il2cpp-recover global-metadata.dat --binary libil2cpp.so -o unity_me
 - Recovers assemblies, namespaces, type definitions, method signatures, field offsets, and string literal pools across metadata versions 24, 27, 29, 31, and 39.
 - *Test status:* Tested on synthetic fixtures and Android packages; untested on public Unity iOS builds due to the absence of legal public Unity iOS sample binaries.
 
-### Workflow E: Z3-Proven ARM64 Jump Table Recovery
+### Workflow E: ARM64 Jump Table Recovery (Checked Against Independent Decoder)
 
-Disassemble and formally prove switch dispatch tables and case bounds in ARM64 binaries:
+Disassemble and verify switch dispatch tables and case bounds in ARM64 binaries:
 
 ```python
 from superghidra.acceleration import ARM64JumpTableProver
@@ -192,12 +192,12 @@ candidates = prover.scan_candidates(code_bytes, base_va=0x1000)
 for cand in candidates:
     recovered = prover.recover_jump_table(cand, memory_data=image_bytes, memory_base_va=0x1000)
     if recovered.proven:
-        print(f"Proven switch at {recovered.base_pc:#x}: {recovered.bounds_n} cases -> {recovered.targets}")
+        print(f"Switch at {recovered.base_pc:#x}: {recovered.bounds_n} cases -> {recovered.targets}")
 ```
 
 - Discovers table patterns (`CMP`, `B.cond`, `ADR`/`ADRP+ADD`, `LDRSW`/`LDRB`/`LDRH`/`LDR`, `BR indirect`).
 - Lowered byte-offset tables (shift 0 from LLVM/Swift/Chromium) and word-offset tables (shift 2 from Apple Clang) resolve exact case counts N and target mappings.
-- **Requires `pip install "superghidra[smt]"`:** If `z3-solver` is absent, candidate patterns are detected but cannot be formally proven, issuing a warning.
+- **Bounds verification:** Evaluated via direct arithmetic and register dataflow checks. An optional Z3 formal verification pass can be enabled with `ARM64JumpTableProver(use_z3=True)`.
 
 
 ## Agent & MCP Configuration (Claude Desktop, Cursor, Antigravity)
@@ -301,7 +301,7 @@ These modules target specific scale bottlenecks or standalone verification tasks
 | Package / Subsystem | What It Does | Scope & Hardware Caveats |
 | :--- | :--- | :--- |
 | **`storage` (`[storage]` — Synthetic 16 KB Page Codec)** | Compresses 16 KB `BufferFile` pages using LZ4 (`442.9 MB/s`, `79.32%` savings) or Zstd Level 3 (`206.5 MB/s`, `86.47%` savings) and packages `SuperGhidraCodec.jar`. | **Experimental / External `.sgdb` only:** Measured on synthetic pages from `GhidraPageSimulator`. Ghidra hardcodes `LocalManagedBufferFile` without an SPI hook, so it does not transparently compress live `.rep` `.gbf` databases without patching Ghidra's jar. |
-| **`acceleration` (`[gpu]`, `[smt]` — ARM64 Sweeps & Bounds-Proven Jump Tables)** | Scans ARM64 binaries for `ADRP + ADD/LDR` pairs and function prologues (`20 MB` / `5.2M` insns in `41.20 ms` = `127.25 M insn/s` on RTX A5500). Formal Z3 jump table bounds proving (`ARM64JumpTableProver`) extracts switch targets and case counts N. | GPU sweeps optional for ≥ 5 MB (NumPy SIMD handles < 5 MB). Formal jump table bounds proving requires `[smt]` (`z3-solver`). |
+| **`acceleration` (`[gpu]`, `[smt]` — ARM64 Sweeps & Bounds-Proven Jump Tables)** | Scans ARM64 binaries for `ADRP + ADD/LDR` pairs and function prologues (`20 MB` / `5.2M` insns in `41.20 ms` = `127.25 M insn/s` on RTX A5500). Jump table bounds verification (`ARM64JumpTableProver`) extracts switch targets and case counts N. | GPU sweeps optional for ≥ 5 MB (NumPy SIMD handles < 5 MB). Z3 bounds double-checking is optional (`use_z3=True`). |
 | **`lifters` (`[smt]` — Zero-JVM P-Code Lifter & Z3 Prover)** | Pure-Python ARM64/x86_64 → P-code lifter (integer, exclusive memory, SIMD vector math, ARMv8.1-A atomics) and Z3 equivalence prover (`SMTPcodeVerifier`). | **Bounded Subset / Sound `UNKNOWN`:** Standalone lifting covers bounded instruction subsets; `SMTPcodeVerifier` intentionally returns `UNKNOWN` (`equivalent=False`) on floating-point ops, unhandled instructions, or loops exceeding the unroll bound. |
 
 Each package has its own README under [`src/superghidra/`](../src/superghidra/).
@@ -315,7 +315,7 @@ Summary results are in the main [README](../README.md#tested-on-real-macos--ios-
 - **Fixups:** compared one by one with [LIEF](https://github.com/lief-project/LIEF) 1.0.0 (address, kind, target), plus 20 random values per slice checked by hand. On some arm64e executables, LIEF adds the image base twice to plain rebases. Those cases were decoded from the raw pointers by hand, and SuperGhidra was correct.
 - **Jump tables:** every proven table's destinations were recomputed by an independent capstone-based decoder. Tables it flagged were disassembled and checked by hand; all were decoder artifacts.
 - **Go / Rust:** Go results were checked against an independent `.go.buildinfo` parser. Rust results were checked against `cargo-auditable` (`.dep-v0`) data where present, otherwise against crate names in panic paths.
-- **Install:** `[smt]` (Z3) is required. With a plain `pip install superghidra`, every jump table comes back unproven.
+- **Install:** Z3 is optional (`use_z3=True`). A plain `pip install superghidra` recovers and verifies jump tables directly.
 
 **Coverage, not completeness:** "100%" means every table SuperGhidra *proves* is right. It does not mean it finds every switch. As a rough upper bound, a capstone heuristic counts likely switch dispatches (with a bounds check), and SuperGhidra proves fewer:
 
@@ -385,21 +385,21 @@ Detailed logs and measurement methodology are documented in [`docs/benchmarks/EM
 # Core package (ELF/PE/Mach-O loaders, RTTI/MFC recovery, Rust/Go audit, IL2CPP)
 pip install superghidra
 
-# Recommended: Core + Z3 formal verification (required for bounds-proven jump tables)
+# Optional: Core + Z3 formal verification (for P-code SMT equivalence checking)
 pip install "superghidra[smt]"
 
 # Full installation with all optional backends
 pip install "superghidra[all]"
 ```
 
-> [!IMPORTANT]
-> **Bounds-Proven Jump Tables Require `[smt]`**: To formally prove ARM64 switch jump tables and case counts, install `superghidra[smt]` (or `superghidra[all]`), which installs `z3-solver`. A plain `pip install superghidra` detects candidate dispatch structures but cannot prove case bounds without the solver, emitting a warning.
+> [!NOTE]
+> **Jump Table Recovery Works Standalone**: ARM64 switch jump tables and case bounds are verified directly via arithmetic and dataflow gates without requiring external solvers. An optional Z3 formal double-check can be enabled via `ARM64JumpTableProver(use_z3=True)` (requiring `superghidra[smt]`).
 
 ### Optional Dependency Extras
 
 | Extra | Command | What It Enables |
 | :--- | :--- | :--- |
-| `[smt]` | `pip install "superghidra[smt]"` | Z3 solver backend (`z3-solver`). Required for `ARM64JumpTableProver` switch bounds proofs and `SMTPcodeVerifier` semantic equivalence checks. Plain `pip install superghidra` emits a warning and returns unproven targets when solving switch bounds. |
+| `[smt]` | `pip install "superghidra[smt]"` | Z3 solver backend (`z3-solver`). Required for `SMTPcodeVerifier` semantic equivalence checks and optional double-checking in `ARM64JumpTableProver(use_z3=True)`. |
 | `[gpu]` | `pip install "superghidra[gpu]"` | WGPU compute shaders (`wgpu`). Accelerates large ARM64 `ADRP` and function prologue sweeps (≥ 5 MB). |
 | `[storage]` | `pip install "superghidra[storage]"` | LZ4 & Zstandard 16 KB page compression (`lz4`, `zstandard`). |
 | `[ghidra]` | `pip install "superghidra[ghidra]"` | PyGhidra bridge & JVM headless bindings (`pyghidra`). |

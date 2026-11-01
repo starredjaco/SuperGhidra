@@ -580,6 +580,7 @@ class NeuralDecompilerPipeline:
                     is_safe = False
             except Exception as e:
                 logger.warning(f"[NeuralDecompilerPipeline] SMT verification invocation failed: {e}")
+                is_safe = False
 
         # D-LiFT 3-Gate Neural Refinement Verification (U4).
         # Live skin path: differential execution, never the constant-set fallback.

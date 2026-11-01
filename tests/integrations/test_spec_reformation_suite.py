@@ -707,6 +707,37 @@ class TestNeuralPipelineHardwareSMT(unittest.TestCase):
         has_smt_proof = any("SMT_PROOF_" in h for h in commit.evidence_proof_hashes)
         self.assertTrue(has_smt_proof)
 
+    def test_verify_and_commit_smt_exception_marks_unsafe(self):
+        """Verifies that an unhandled SMT error or crash marks is_safe_to_commit as False."""
+        from unittest.mock import patch
+        pipeline = NeuralDecompilerPipeline()
+        code = struct.pack("<II", 0xD2800840, 0xD65F03C0)
+        c_code_snippet = "return 0x42;"
+        skeleton = DecompiledSkeleton(
+            function_address=0x2000,
+            function_rva=0x2000,
+            raw_source="int getValue() { return 0x42; }",
+            skeleton_source="int getValue() { return 0x42; }",
+            variable_mapping={},
+            parameter_count=1,
+            call_targets=[],
+            memory_displacements=[],
+            vtable_call_offsets=[],
+        )
+        prediction = NeuralPrediction(
+            predicted_function_name="getValue",
+            predicted_return_type="int",
+            predicted_parameters=[("void*", "this")],
+            predicted_struct_fields={},
+            confidence=0.95,
+            model_identifier="test",
+        )
+        with patch("superghidra.lifters.smt_pcode_verifier.SMTPcodeVerifier.verify_equivalence", side_effect=RuntimeError("SMT solver crashed")):
+            commit = pipeline.verify_and_commit(
+                skeleton, prediction, arm64_bytes=code, c_code_snippet=c_code_snippet
+            )
+            self.assertFalse(commit.is_safe_to_commit)
+
 
 class TestDeltaMigrationBetweenBinaries(unittest.TestCase):
     """Verifies cross-binary semantic delta migration with struct shifts and symbol renaming."""

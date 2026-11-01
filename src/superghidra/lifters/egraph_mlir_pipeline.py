@@ -819,10 +819,10 @@ class EGraph:
 
 class EquivalenceProver:
     """
-    Bit-Exact Equivalence Prover:
+    Equivalence Verifier:
       - Uses Z3 SMT BitVec solver (`orig != simp` is UNSAT) when Z3 is installed.
-      - Uses SiMBA / Reichenwallner 0/1 truth-table theorem + boundary/random 64-bit
-        algebraic co-execution (256 vectors) as a zero-dependency formal fallback.
+      - When Z3 is unavailable, evaluates 256 64-bit random/boundary test vectors as an
+        empirical sanity check, but marks the result unproven (equivalent=False).
     """
     BOUNDARY_VECTORS = [
         0, 1, 2, 3, 7, 0x10, 0x5555555555555555, 0xAAAAAAAAAAAAAAAA,
@@ -890,7 +890,7 @@ class EquivalenceProver:
             if t1.evaluate64(env) != t2.evaluate64(env):
                 return False, (time.perf_counter() - t0) * 1000.0, "Counterexample-Found"
 
-        return True, (time.perf_counter() - t0) * 1000.0, "SiMBA-Basis+256Vec-Verified"
+        return False, (time.perf_counter() - t0) * 1000.0, "256-vector empirical check passed, but formal SMT proof requires z3-solver"
 
 
 class EGraphMBADeobfuscatorPass:
@@ -1306,9 +1306,12 @@ class IfElseRegion(RegionNode):
 
 class MLIRGotoFreeRestructurer:
     """
-    Models the Trail of Bits `Patchestry` + `Rellic` pipeline:
-    Lowers a PCodeFunction into structured MLIR (`pcode` + `scf` + `vast.hl` dialects)
-    and applies region-based post-dominator restructuring to emit 100% goto-free C code.
+    In-memory acyclic DAG restructurer for P-Code control-flow graphs.
+    Reconstructs structured if-then-else hierarchies and emits textual MLIR-like dialect
+    and C representations.
+
+    Note: This is an internal DAG restructurer, not an LLVM MLIR compiler binding.
+    Backward loop edges and cyclic control flow are dropped/unsupported.
     """
     def restructure_function(self, func: PCodeFunction) -> Tuple[str, str]:
         visited: Set[int] = set()

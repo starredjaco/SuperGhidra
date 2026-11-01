@@ -869,7 +869,7 @@ def test_unresolved_targets_mark_table_unproven():
 
 
 def test_missing_z3_warns_and_marks_unproven(monkeypatch):
-    """30. Verifies warning and unproven return when z3 is missing."""
+    """30. Verifies default mode works without Z3, and use_z3=True warns when missing."""
     import warnings
 
     from superghidra.acceleration import jump_table_prover
@@ -879,11 +879,11 @@ def test_missing_z3_warns_and_marks_unproven(monkeypatch):
 
     with warnings.catch_warnings(record=True) as recorded:
         warnings.simplefilter("always")
+        # Default initialization does not require Z3 and emits no warning
         prover = jump_table_prover.ARM64JumpTableProver()
-        assert len(recorded) == 1
-        assert 'pip install "superghidra[smt]"' in str(recorded[0].message)
+        assert len(recorded) == 0
 
-        # Calling prove_bounds directly does not duplicate warning because _WARNED_MISSING_Z3 is True
+        # Default arithmetic bounds verification succeeds without Z3
         n, proven = prover.prove_bounds(
             bound_imm=7,
             cond="HI",
@@ -893,5 +893,52 @@ def test_missing_z3_warns_and_marks_unproven(monkeypatch):
             dispatch_reg=1,
         )
         assert n == 8
-        assert proven is False
+        assert proven is True
+        assert len(recorded) == 0
+
+        # When use_z3=True is explicitly requested without z3-solver installed, warns and fails proof
+        prover_z3 = jump_table_prover.ARM64JumpTableProver(use_z3=True)
         assert len(recorded) == 1
+        assert 'pip install "superghidra[smt]"' in str(recorded[0].message)
+
+        n_z3, proven_z3 = prover_z3.prove_bounds(
+            bound_imm=7,
+            cond="HI",
+            cmp_reg=0,
+            index_reg=0,
+            table_target_reg=1,
+            dispatch_reg=1,
+        )
+        assert n_z3 == 8
+        assert proven_z3 is False
+
+
+def test_recover_jump_table_without_z3(monkeypatch):
+    """31. Verifies jump tables are successfully recovered and proven without Z3."""
+    from superghidra.acceleration import jump_table_prover
+
+    monkeypatch.setattr(jump_table_prover, "HAS_Z3", False)
+    monkeypatch.setattr(jump_table_prover, "_WARNED_MISSING_Z3", False)
+
+    prover = jump_table_prover.ARM64JumpTableProver()
+    insns = [
+        _encode_cmp_imm_32(0, 3),  # CMP W0, #3 -> 4 cases
+        _encode_b_cond(8, 25),     # B.HI default
+        _encode_adr(1, 0x20),       # ADR X1, #32
+        0x38606822,                # LDRB W2, [X1, X0]
+        _encode_br(2),             # BR X2
+    ]
+    code = struct.pack(f"<{len(insns)}I", *insns)
+    candidates = prover.scan_candidates(code, base_va=0x1000)
+    assert len(candidates) == 1
+
+    table_data = bytes([4, 8, 12, 16])
+    recovered = prover.recover_jump_table(
+        candidate=candidates[0],
+        memory_data=table_data,
+        memory_base_va=candidates[0].table_base_va,
+    )
+    assert recovered.proven is True
+    assert recovered.bounds_n == 4
+    assert len(recovered.targets) == 4
+    assert recovered.unresolved_cases == 0

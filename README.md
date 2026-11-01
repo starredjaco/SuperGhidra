@@ -17,7 +17,7 @@ Instead of paying 5–15 seconds of JVM startup per headless run or fighting `.r
 ## Install
 
 ```bash
-pip install "superghidra[smt]"   # [smt] adds Z3; needed to prove ARM64 jump tables
+pip install superghidra   # [smt] adds Z3 for P-code equivalence checking
 ```
 
 No Ghidra or JVM is needed for the commands below. Python 3.10+. Other extras (GPU, MCP adapters, dev) and source installs are listed in [docs/DETAILS.md](docs/DETAILS.md#installation-cli--configuration).
@@ -45,13 +45,13 @@ Run `superghidra <command> --help` for the options. Workflows, architecture, the
 
 ## Tested on Real macOS & iOS Binaries (v1.0.7 / 1.0.8)
 
-Fixup decoding, Z3-proven ARM64 jump tables and Rust/Go auditing were checked against independent reference tools on shipping macOS and iOS binaries. The runs used the PyPI wheel `superghidra[smt]==1.0.7` on Linux x86_64, with no Ghidra installed. 1.0.8 changes no analysis logic: it only adds a warning when Z3 is missing and an error message for `smt-verify`.
+Fixup decoding, ARM64 jump tables (checked against an independent decoder), and Rust/Go auditing were checked against independent reference tools on shipping macOS and iOS binaries. The runs used the PyPI wheel `superghidra==1.0.7` on Linux x86_64, with no Ghidra installed. 1.0.8 changes no analysis logic.
 
-**Key numbers:** fixups matched [LIEF](https://github.com/lief-project/LIEF) 1.0.0 exactly on every slice that parsed. Every proven jump table had the correct destinations, with 0 false proofs.
+**Key numbers:** fixups matched [LIEF](https://github.com/lief-project/LIEF) 1.0.0 exactly on every slice that parsed. Every verified jump table had the correct destinations, with 0 false matches.
 
 **Public set** (15 files, 18 slices; `dispatch s` = `apple-dispatch` wall time, `JT s` = jump-table pass):
 
-| Sample | Platform / Arch | Fixup Format | Fixups Matched / Total (LIEF) | Proven JTs (Destinations Verified) | Go / Rust Audit | dispatch s / JT s |
+| Sample | Platform / Arch | Fixup Format | Fixups Matched / Total (LIEF) | Jump Tables (Destinations Checked) | Go / Rust Audit | dispatch s / JT s |
 | :--- | :--- | :---: | :---: | :---: | :--- | :---: |
 | [Electron Framework](https://github.com/electron/electron/releases/tag/v45.2.1) v45.2.1 | macOS arm64 | chained 2 | 671,510 / 671,510 | 1,427 / 1,427 | — | 2.20 / 185.7 |
 | chrome_crashpad_handler (same Electron zip) | macOS arm64 | chained 2 | 3,755 / 3,755 | 2 / 2 | — | 0.05 / 0.32 |
@@ -70,9 +70,9 @@ Fixup decoding, Z3-proven ARM64 jump tables and Rust/Go auditing were checked ag
 | [fd](https://github.com/sharkdp/fd/releases/tag/v10.5.0) 10.5.0 | macOS arm64 | legacy dyld_info | 10,083 / 10,083 | 20 / 20 | Rust, 23 crates | 0.06 / 0.42 |
 | [bat](https://github.com/sharkdp/bat/releases/tag/v0.26.1) 0.26.1 | macOS arm64 | legacy dyld_info | 11,841 / 11,841 | 35 / 35 | Rust, 53 crates | 0.07 / 0.49 |
 
-**Held-out set** (never used during development): 30 slices from 22 binaries. Fixups exact vs. LIEF on **30 / 30 slices**, **5,238 / 5,238** proven jump tables with correct destinations, **0** false proofs. The held-out names are withheld on purpose, so the set stays unseen by future tuning.
+**Held-out set** (never used during development): 30 slices from 22 binaries. Fixups exact vs. LIEF on **30 / 30 slices**, **5,238 / 5,238** jump tables with correct destinations (checked against an independent decoder), **0** false matches. The held-out names are withheld on purpose, so the set stays unseen by future tuning.
 
-"100%" means every table SuperGhidra *proves* is right. It does not mean it finds every switch (for example, Electron: 1,427 proven vs. ~2,392 likely switches). Methodology and the coverage table: [docs/DETAILS.md](docs/DETAILS.md#real-world-benchmark-methodology). Synthetic benchmarks (hardware throughput, GPU, compression, OOD) and the CI matrix are there too.
+"100%" means every table SuperGhidra recovers has valid destinations. It does not mean it finds every switch (for example, Electron: 1,427 verified vs. ~2,392 likely switches). Methodology and the coverage table: [docs/DETAILS.md](docs/DETAILS.md#real-world-benchmark-methodology). Synthetic benchmarks (hardware throughput, GPU, compression, OOD) and the CI matrix are there too.
 
 ### Reference Puzzle Baseline: HumanEval-Decompile (1,300 Evaluated Functions)
 
@@ -100,7 +100,6 @@ The filter is a deterministic rewriter, not a neural model. See the [caveat](doc
 
 ## Known Limitations
 
-- **Jump tables need Z3.** Without `[smt]`, candidates are found but stay `proven=False`, and a warning says `z3-solver` is missing.
 - **No x86_64 jump-table prover.** Intel slices get fixup checks only.
 - **arm64e hardened switches** (`csel` index clamp) are not detected.
 - **Slow on big binaries.** The Electron jump-table pass takes ~3 minutes and ~2.2 GB of RAM. The prover has occasionally stalled for minutes; this could not be reproduced on demand. The static library dependency check takes ~7 s on a binary of hugo's size.

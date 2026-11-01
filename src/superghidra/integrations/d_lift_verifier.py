@@ -8,6 +8,9 @@ Grounded in:
   - D-LiFT: Improving LLM-based Decompiler Backend via Code Quality-driven Fine-tuning (NDSS 2026)
   - SuperGhidra Domain 5 (`superghidra/lifters/`) & Domain 7 (`superghidra/integrations/`)
 
+Note: This module performs heuristic syntax/readability scoring and z-score advantage normalization
+on candidate lists, not reinforcement learning model training.
+
 Covers:
   1. Gate 1 — Syntax Verification (`R_syn`): In-memory C/C++ compilation via `clang`/`gcc`
      with diagnostic extraction, plus a Python C-AST structural validator fallback with
@@ -20,9 +23,9 @@ Covers:
   3. Gate 3 — Readability Assessment (`R_read`): Computes Buse & Weimer (B&W) and R2I
      decompiler-specific readability metrics (`goto` count, pointer dereference density,
      cast clutter, temporary `uVar`/`iVar` ratio, cyclomatic nesting depth).
-  4. D-Score Hierarchical Reward (`r_i`) & Group Relative Policy Optimization (`GRPO`):
-     Enforces `max(R_syn) < min(R_sem) < min(R_read)` so inaccurate LLM refinements are
-     strictly rejected at inference and heavily penalized during RL fine-tuning.
+  4. D-Score Hierarchical Reward (`r_i`) & Candidate Advantage Normalization:
+     Enforces `max(R_syn) < min(R_sem) < min(R_read)` so inaccurate refinements are
+     rejected at inference and candidate advantages are group-normalized via z-scores.
 """
 
 from __future__ import annotations
@@ -607,10 +610,10 @@ DScoreResult = DScoreReport
 
 class GRPORewardManager:
     """
-    Manages Group Relative Policy Optimization (GRPO) advantage computations.
     Computes group-normalized advantages:
         A_hat_i = (r_i - mu) / (sigma + epsilon)
-    over a candidate pool, enabling RL fine-tuning without a separate critic model.
+    over a candidate pool. Performs heuristic syntax/readability scoring and z-score
+    advantage normalization on candidate lists, not reinforcement learning model training.
     """
     def __init__(self, beta_kl: float = 0.0, eps: float = 1e-8) -> None:
         self.beta_kl = beta_kl
@@ -639,11 +642,14 @@ class GRPORewardManager:
         return cls(beta_kl=beta_kl).compute_advantages(reports)
 
 
+AdvantageScoreNormalizer = GRPORewardManager
+
+
 class DLiFTPipeline:
     """
-    Implements the complete D-LiFT Training (GRPO advantage normalization & policy loss)
-    and Inference Selection pipeline over native Ghidra output, baseline LLMs, and
-    D-LiFT fine-tuned models.
+    Evaluates candidate C code decompilation outputs using syntax verification,
+    semantic equivalence checks, readability scoring, and candidate advantage normalization.
+    Performs candidate ranking and scoring on candidate lists; does not perform reinforcement learning model training.
     """
     def __init__(self) -> None:
         self.syn_gate = ClangSyntaxGate()
@@ -1098,6 +1104,7 @@ __all__ = [
     "DScoreReport",
     "DScoreResult",
     "GRPORewardManager",
+    "AdvantageScoreNormalizer",
     "DLiFTPipeline",
     "DLiftRewardEngine",
     "build_dlift_benchmark_candidates",

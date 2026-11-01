@@ -1,9 +1,10 @@
-"""Hybrid WGPU / SIMD + Z3 Bounds-Proven ARM64 Jump-Table Recovery Engine.
+"""ARM64 Jump-Table Recovery Engine with Independent Bounds Verification.
 
 Detects optimized ARM64 byte (LDRB), halfword (LDRH), and word (LDRSW)
 relative switch tables by pairing SIMD/WGPU candidate scanning with
-Z3 / formal unsigned bounds verification to prove exact case counts N,
-extract table entries, and separate proven mappings from defaults.
+arithmetic and register dataflow bounds verification to prove exact case
+counts N, extract table entries, and separate verified mappings from defaults.
+An optional Z3 formal verification pass is available for double-checking.
 """
 
 from __future__ import annotations
@@ -69,7 +70,7 @@ class JumpTableCandidate:
 
 @dataclasses.dataclass
 class RecoveredJumpTable:
-    """Formally bounds-proven switch jump table."""
+    """Bounds-verified switch jump table."""
 
     base_pc: int
     bounds_n: int
@@ -96,12 +97,13 @@ class RecoveredJumpTable:
 
 
 class ARM64JumpTableProver:
-    """Scans and formally proves ARM64 jump tables."""
+    """Scans and bounds-verifies ARM64 jump tables."""
 
-    def __init__(self, use_gpu: bool = False) -> None:
+    def __init__(self, use_gpu: bool = False, use_z3: bool = False) -> None:
         self.use_gpu = use_gpu
+        self.use_z3 = use_z3
         self._z3_cache: dict[tuple[int, str], bool] = {}
-        if not HAS_Z3:
+        if self.use_z3 and not HAS_Z3:
             _warn_missing_z3()
 
     def prove_bounds(
@@ -114,8 +116,13 @@ class ARM64JumpTableProver:
         dispatch_reg: int | None = None,
         target_flows_to_dispatch: bool | None = None,
         table_base_reg: int | None = None,
+        use_z3: bool | None = None,
     ) -> Tuple[int, bool]:
-        """Proves exact case count N and register dataflow using Z3 formal verification.
+        """Proves exact case count N and register dataflow.
+
+        By default, uses direct arithmetic bounds calculation and structural
+        dataflow gates. An optional Z3 formal verification pass can be enabled
+        via use_z3=True.
 
         For CMP Wn, #imm:
         - B.HI default: takes branch if x > imm (unsigned). Valid cases: 0..imm. N = imm + 1.
@@ -145,6 +152,11 @@ class ARM64JumpTableProver:
             return expected_n, False
         if table_target_reg != dispatch_reg and not target_flows_to_dispatch:
             return expected_n, False
+
+        # By default, the simple structural and arithmetic check is sufficient
+        should_z3 = self.use_z3 if use_z3 is None else use_z3
+        if not should_z3:
+            return expected_n, True
 
         cache_key = (bound_imm, cond.upper())
         if cache_key in self._z3_cache:

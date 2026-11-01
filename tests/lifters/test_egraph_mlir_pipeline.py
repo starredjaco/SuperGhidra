@@ -245,12 +245,34 @@ class TestEquivalenceProver(unittest.TestCase):
         t_mba = ExprTree(op="+", args=(t_xor, t_mul))
 
         verified, elapsed_ms, method = EquivalenceProver.verify_trees_equivalent(t_add, t_mba)
-        self.assertTrue(verified)
         self.assertGreaterEqual(elapsed_ms, 0.0)
         if HAS_Z3:
+            self.assertTrue(verified)
             self.assertEqual(method, "Z3-SMT-UNSAT")
         else:
-            self.assertEqual(method, "SiMBA-Basis+256Vec-Verified")
+            self.assertFalse(verified)
+            self.assertEqual(method, "256-vector empirical check passed, but formal SMT proof requires z3-solver")
+
+    def test_prover_without_z3_empirical_fallback(self):
+        """Verifies that when HAS_Z3 is False, 256-vector pass returns unverified status."""
+        import superghidra.lifters.egraph_mlir_pipeline as emp
+        orig_has_z3 = emp.HAS_Z3
+        try:
+            emp.HAS_Z3 = False
+            t_x = ExprTree(op="var", leaf=self.x)
+            t_y = ExprTree(op="var", leaf=self.y)
+            t_add = ExprTree(op="+", args=(t_x, t_y))
+            t_xor = ExprTree(op="^", args=(t_x, t_y))
+            t_and = ExprTree(op="&", args=(t_x, t_y))
+            t_two = ExprTree(op="const", leaf=Varnode(AddressSpace.CONST, 2, 8))
+            t_mul = ExprTree(op="*", args=(t_two, t_and))
+            t_mba = ExprTree(op="+", args=(t_xor, t_mul))
+
+            verified, elapsed_ms, method = EquivalenceProver.verify_trees_equivalent(t_add, t_mba)
+            self.assertFalse(verified)
+            self.assertIn("formal SMT proof requires z3-solver", method)
+        finally:
+            emp.HAS_Z3 = orig_has_z3
 
     def test_smt_prover_non_equivalent_trees(self):
         t_x = ExprTree(op="var", leaf=self.x)

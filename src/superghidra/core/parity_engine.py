@@ -32,18 +32,16 @@ Implemented Subsystems:
      hashes (FLIRT-style) with 32-dimensional CFG topological/opcode feature vectors
      and cosine-similarity matching across optimization levels (`-O1`..`-O3`).
   6. Gap 6 — ClangHeaderImporter:
-     `libclang`-backed (with deterministic recursive-descent C++17/20 AST fallback)
-     header parser supporting templates, C++ inheritance vtables, bitfields, and
-     `__attribute__((aligned(N)))` / `packed`, emitting `.sgdb` type records and
-     Ghidra `DataType` archives.
+     Regex-based C struct importer (supporting alignment attributes, single C++
+     inheritance, vtable pointers, STL container layouts, and bitfields), emitting
+     .sgdb type records and Ghidra DataType archives.
   7. Gap 7 — SGDBBlockStore & ARM64ADRPScanner:
-     16 KB chunked compressed `.sgdb` block storage with 20-byte 64-bit slot
-     directory indexing, paired with a vectorized NumPy ARM64 `ADRP + ADD/LDR`
+     16 KB chunked compressed .sgdb block storage with 20-byte 64-bit slot
+     directory indexing, paired with a vectorized NumPy ARM64 ADRP + ADD/LDR
      cross-reference scanner.
   8. Section 7.3 — SparseMatrixDatalogEngine (`query_binary_dataflow`):
-     Vectorized boolean matrix Datalog / Value-Set Analysis (VSA) engine over
-     P-Code `def-use`, call-graph, and memory edges for sub-second inter-procedural
-     taint analysis and indirect call target resolution.
+     Dense NumPy reachability matrix calculator over P-Code `def-use`, call-graph,
+     and memory edges for inter-procedural taint analysis and path finding.
 """
 
 from __future__ import annotations
@@ -1608,10 +1606,10 @@ class ParsedCompositeType:
 
 class ClangHeaderImporter:
     """
-    Closes Gap 6: Replaces Ghidra's legacy C grammar parser with a C++14/17/20-aware
-    header importer supporting `__attribute__((aligned(N)))`, `__attribute__((packed))`,
-    `alignas(N)`, C++ inheritance, virtual method vtable synthesis, template fields
-    (`std::vector<T>`, `std::shared_ptr<T>`), and bitfields.
+    Regex-based C struct and header importer. Parses struct definitions supporting
+    `__attribute__((aligned(N)))`, `__attribute__((packed))`, `alignas(N)`, single C++ inheritance,
+    virtual method vtable pointers, STL container layouts (`std::vector<T>`, `std::shared_ptr<T>`),
+    and bitfields. Note: this is a regex-based heuristic extractor, not a libclang AST parser.
     """
 
     PRIMITIVE_LAYOUTS: Dict[str, Tuple[int, int]] = {
@@ -2018,15 +2016,15 @@ class ARM64ADRPScanner:
 
 
 # =============================================================================
-# SECTION 7.3: SPARSE-MATRIX GPU/VECTOR DATALOG & WHOLE-BINARY VSA ENGINE
+# SECTION 7.3: DENSE NUMPY REACHABILITY & DATAFLOW ENGINE
 # =============================================================================
 
 class SparseMatrixDatalogEngine:
     """
-    Implements Phase 2 Section 7.3 (`query_binary_dataflow`):
-    Represents whole-binary P-Code `def-use` chains, memory alias edges, and
-    call-graph transitions as boolean adjacency matrices, computing transitive
-    closure and sanitized taint reachability via vectorized matrix multiplication.
+    Dense NumPy reachability matrix calculator. Represents P-Code `def-use` chains,
+    memory alias edges, and call-graph transitions as dense boolean adjacency matrices,
+    computing transitive closure and sanitized taint reachability via NumPy matrix multiplication.
+    Note: uses dense NumPy arrays, not sparse matrix or GPU Datalog acceleration.
     """
 
     def __init__(self) -> None:
