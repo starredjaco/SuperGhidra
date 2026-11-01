@@ -479,8 +479,12 @@ def cmd_oracle(args: argparse.Namespace) -> int:
 
 
 def cmd_smt_verify(args: argparse.Namespace) -> int:
-    from superghidra.lifters.smt_pcode_verifier import SMTPcodeVerifier
-    verifier = SMTPcodeVerifier()
+    try:
+        from superghidra.lifters.smt_pcode_verifier import SMTPcodeVerifier
+        verifier = SMTPcodeVerifier()
+    except (ImportError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     if args.ledger:
         if not args.ledger.is_file():

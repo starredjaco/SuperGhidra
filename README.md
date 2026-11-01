@@ -16,12 +16,23 @@ Instead of paying 5–15 seconds of JVM startup per headless run or fighting `.r
 
 ## Try It in 60 Seconds
 
-No Ghidra needed, just Python. Recover MSVC RTTI classes and MFC `Serialize()` layouts straight from a PE file:
+No Ghidra needed, just Python. Recover MSVC RTTI classes and MFC `Serialize()` layouts, audit compiled Rust/Go binaries, or recover Unity IL2CPP structures straight from binary files:
 
 ```bash
+# Core package (ELF/PE/Mach-O loaders, RTTI/MFC recovery, Rust/Go audit, IL2CPP)
 pip install superghidra
+
+# Or include [smt] for Z3-proven ARM64 jump table bounds and SMT verification:
+pip install "superghidra[smt]"
+
+# Recover MSVC RTTI classes from a PE file:
 superghidra rtti-recover target.dll -o classes.json
-python -m superghidra.formats.serialize_trace target.dll CMyDoc
+
+# Audit compiled Rust crates or Go module dependencies:
+superghidra crate-audit target.bin -o deps.json
+
+# Recover Unity IL2CPP types, methods, and string pools:
+superghidra il2cpp-recover global-metadata.dat -o unity.json
 ```
 
 Want an AI agent (Claude Desktop, Claude Code, Cursor, Antigravity) driving Ghidra without GUI lockups? Install the MCP server and point it at your project; see [Agent & MCP Configuration](#agent--mcp-configuration-claude-desktop-cursor-antigravity) for the config block. `GHIDRA_INSTALL_DIR` and `JAVA_HOME` must be set (Ghidra 11/12 + OpenJDK 21):
@@ -39,6 +50,9 @@ SuperGhidra spans four distinct execution paths. Pick the entry point that match
 | :--- | :--- | :---: | :---: |
 | **Decompile real functions, query xrefs, or rename symbols** | `python -m superghidra.core.ghidra_oracle <subcommand>` | **Yes** (Ghidra 11/12 + OpenJDK 21 + PyGhidra) | **No** (writes go to JSON overlay / fork journal) |
 | **Recover MSVC RTTI, MFC `CRuntimeClass`, `Serialize()`, or PE/ELF/Mach-O headers** | `python -m superghidra.formats.msvc_class_recovery <binary>` or `superghidra rtti-recover <binary> -o classes.json` | **No** (standalone Python) | **No** (exports JSON, DWARF 5, Breakpad, or `.map`) |
+| **Audit compiled Rust crates (.dep-v0) or Go dependencies (.go.buildinfo / pclntab)** | `superghidra crate-audit <binary> -o audit.json` | **No** (standalone Python) | **No** (exports JSON report) |
+| **Recover Unity IL2CPP assemblies, types, methods, and string pools** | `superghidra il2cpp-recover <metadata> [--binary <bin>] -o il2cpp.json` | **No** (standalone Python) | **No** (exports JSON report) |
+| **Formally prove ARM64 switch jump tables with Z3 SMT solver** | `from superghidra.acceleration import ARM64JumpTableProver` | **No** (requires `[smt]`) | **No** (in-memory extraction / JSON) |
 | **Connect Claude Desktop, Cursor, or Antigravity to an open target** | MCP Server (`superghidra-mcp` via [SuperghidraMCP](https://github.com/yuatemycat/SuperGhidraMCP)) | **Yes** (connects to running daemon) | **No** (commits gated by validation + overlay sync) |
 | **Run GPU/SIMD ARM64 scans, LZ4/Zstd buffer compression, or Z3 P-code checks** | Python API / standalone modules (or MCP tools) | **No** (standalone Python / NumPy / WGPU / Z3) | **No** |
 
@@ -164,9 +178,55 @@ Mutations are recorded in `ghidra_overlay.json` to prevent `.rep` lock collision
   Close the project in the Ghidra GUI to release the `.rep` lock, then replay the journal or merge session forks using `merge_fork(fork_id, auto_discard=True)`.
   When `auto_discard=True`, once all operations merge cleanly with zero pending conflicts (`pending_ops == 0`), SuperGhidra automatically deletes the fork's isolated directory and transaction journal to reclaim disk storage. Unneeded or stale forks can also be deleted directly via `discard_fork(fork_id)`.
 
+### Workflow C: Standalone Rust & Go Binary Auditing (No Ghidra Required)
+
+Audit compiled binaries to recover dependency trees, toolchain metadata, and runtime symbols across ELF, PE, and Mach-O:
+
+```bash
+# Audit compiled Rust crate dependencies (.dep-v0) or Go modules (.go.buildinfo / pclntab)
+superghidra crate-audit target.bin -o crate_audit.json
+```
+
+- **Rust:** Extracts cargo-auditable `.dep-v0` JSON payloads (crate names, versions, enabled features) and matches `/rustc/<hash>/` toolchain commit signatures.
+- **Go:** Locates `\xff Go buildinf:` headers and versioned `pclntab` tables to recover Go compiler version, main module path, dependency replacements, VCS revision info, and function descriptors.
+
+### Workflow D: Unity IL2CPP Metadata Recovery (No Ghidra Required)
+
+Extract structural metadata from Unity games and applications without running Ghidra:
+
+```bash
+# Parse global-metadata.dat
+superghidra il2cpp-recover global-metadata.dat -o unity_metadata.json
+
+# Correlate metadata method definitions with native binary RVAs
+superghidra il2cpp-recover global-metadata.dat --binary libil2cpp.so -o unity_metadata.json
+```
+
+- Recovers assemblies, namespaces, type definitions, method signatures, field offsets, and string literal pools across metadata versions 24, 27, 29, 31, and 39.
+- *Test status:* Tested on synthetic fixtures and Android packages; untested on public Unity iOS builds due to the absence of legal public Unity iOS sample binaries.
+
+### Workflow E: Z3-Proven ARM64 Jump Table Recovery
+
+Disassemble and formally prove switch dispatch tables and case bounds in ARM64 binaries:
+
+```python
+from superghidra.acceleration import ARM64JumpTableProver
+
+prover = ARM64JumpTableProver()
+candidates = prover.scan_candidates(code_bytes, base_va=0x1000)
+for cand in candidates:
+    recovered = prover.recover_jump_table(cand, memory_data=image_bytes, memory_base_va=0x1000)
+    if recovered.proven:
+        print(f"Proven switch at {recovered.base_pc:#x}: {recovered.bounds_n} cases -> {recovered.targets}")
+```
+
+- Discovers table patterns (`CMP`, `B.cond`, `ADR`/`ADRP+ADD`, `LDRSW`/`LDRB`/`LDRH`/`LDR`, `BR indirect`).
+- Lowered byte-offset tables (shift 0 from LLVM/Swift/Chromium) and word-offset tables (shift 2 from Apple Clang) resolve exact case counts N and target mappings.
+- **Requires `pip install "superghidra[smt]"`:** If `z3-solver` is absent, candidate patterns are detected but cannot be formally proven, issuing a warning.
+
 ## Agent & MCP Configuration (Claude Desktop, Cursor, Antigravity)
 
-SuperGhidra exposes 42 specialized reverse-engineering tools via the Model Context Protocol (MCP) using [SuperghidraMCP](https://github.com/yuatemycat/SuperGhidraMCP) (including `recover_cpp_classes`, `trace_serialize`, `diff_binaries`, `verify_smt_equivalence`, and `gpu_adrp_scan`). This enables AI coding agents to inspect binaries, query call graphs, and propose validated renames autonomously.
+SuperGhidra exposes 56 registered reverse-engineering tools (61 defined in SuperghidraMCP) via the Model Context Protocol (MCP) using [SuperghidraMCP](https://github.com/yuatemycat/SuperGhidraMCP) (including `recover_cpp_classes`, `trace_serialize`, `diff_binaries`, `verify_smt_equivalence`, and `gpu_adrp_scan`). This enables AI coding agents to inspect binaries, query call graphs, and propose validated renames autonomously.
 
 Install the MCP server from source:
 
@@ -254,9 +314,9 @@ These subsystems form the daily-driver reverse-engineering, C rewriting, and age
 | Package / Subsystem | What It Does | Hardware / Dependency Behavior |
 | :--- | :--- | :--- |
 | **`core` (Daemon, Cache, Overlay & `CompilableDecompilerFilter`)** | Persistent RPC server on `127.0.0.1:5073`, 64 KB shared-memory ring buffer (`< 50 µs` latency in tests), SQLite L2 cache (`>100k req/s`), JSON write overlay (`ghidra_overlay.json`), conflict-aware `merge_fork`, deterministic `CompilableDecompilerFilter` C rewriter, and resource governor (`eco` / `balanced` / `turbo` / `auto`). | Runs on Windows, Linux, and macOS. `CompilableDecompilerFilter` is pure Python; PyGhidra + OpenJDK 21 are required only when attached to a live `.rep`. |
-| **`formats` (Binary Loader, MSVC RTTI, MFC `Serialize()` & DWARF5)** | ELF / PE / Mach-O loader, MSVC RTTI & MFC `CRuntimeClass` recovery, Mach-O Objective-C recovery, `Serialize()` layout tracing, `CArchive` stream decoder, DWARF 5 / Breakpad / `.map` export, and experimental PDB export. | Pure Python; no JVM or Ghidra dependency. |
+| **`formats` (Binary Loader, MSVC RTTI, MFC `Serialize()`, Rust/Go, IL2CPP & DWARF5)** | ELF / PE / Mach-O loader, MSVC RTTI & MFC `CRuntimeClass` recovery, Mach-O Objective-C recovery, `Serialize()` layout tracing, `CArchive` stream decoder, Rust `.dep-v0` crate auditor, Go `.go.buildinfo`/`pclntab` dependency auditor, Unity IL2CPP `global-metadata.dat` recovery, DWARF 5 / Breakpad / `.map` export, and experimental PDB export. | Pure Python; no JVM or Ghidra dependency. |
 | **`diff` (Cross-Version CFG Matcher & Struct Shift Migrator)** | Matches functions across binary builds using CFG feature vectors, detects shifted struct field offsets across patches, and rewrites displaced field accesses. | Runs on CPU (NumPy accelerated). |
-| **`integrations` (42 Guardrailed MCP Tools & Mobile Sidecar)** | Exposes 42 MCP tools (`SuperghidraMCP`), APK ↔ JNI cross-referencer, allow-listed Android emulator memory reader, live CodeBrowser overlay sync (`ghidra_gui_overlay_sync.py`), and `ReconstructionObligationLedger` commit guards (`VTableSlotVerifier`, `FieldDisplacementVerifier`, `AllocationSizeVerifier`). | Commits symbols and structs **only** after deterministic verification of vtable slots, field displacements, and allocation sizes. |
+| **`integrations` (56 Guardrailed MCP Tools & Mobile Sidecar)** | Exposes 56 registered (61 defined) MCP tools (`SuperghidraMCP`), APK ↔ JNI cross-referencer, allow-listed Android emulator memory reader, live CodeBrowser overlay sync (`ghidra_gui_overlay_sync.py`), and `ReconstructionObligationLedger` commit guards (`VTableSlotVerifier`, `FieldDisplacementVerifier`, `AllocationSizeVerifier`). | Commits symbols and structs **only** after deterministic verification of vtable slots, field displacements, and allocation sizes. |
 
 ### 2. Optional & Experimental Backends
 
@@ -265,7 +325,7 @@ These modules target specific scale bottlenecks or standalone verification tasks
 | Package / Subsystem | What It Does | Scope & Hardware Caveats |
 | :--- | :--- | :--- |
 | **`storage` (`[storage]` — Synthetic 16 KB Page Codec)** | Compresses 16 KB `BufferFile` pages using LZ4 (`442.9 MB/s`, `79.32%` savings) or Zstd Level 3 (`206.5 MB/s`, `86.47%` savings) and packages `SuperGhidraCodec.jar`. | **Experimental / External `.sgdb` only:** Measured on synthetic pages from `GhidraPageSimulator`. Ghidra hardcodes `LocalManagedBufferFile` without an SPI hook, so it does not transparently compress live `.rep` `.gbf` databases without patching Ghidra's jar. |
-| **`acceleration` (`[gpu]` — 20 MB+ WGPU ARM64 Sweeps)** | Scans large ARM64 binaries for `ADRP + ADD/LDR` pairs and function prologues (`20 MB` / `5.2M` insns in `41.20 ms` = `127.25 M insn/s` on RTX A5500). | **Optional for ≥ 5 MB binaries:** Below ~5–10 MB, PCIe transfer latency exceeds shader execution time, so `gpu_adrp_scanner` automatically routes `< 5 MB` inputs to NumPy CPU SIMD (`143.95 M insn/s` on 4 MB blocks). |
+| **`acceleration` (`[gpu]`, `[smt]` — ARM64 Sweeps & Bounds-Proven Jump Tables)** | Scans ARM64 binaries for `ADRP + ADD/LDR` pairs and function prologues (`20 MB` / `5.2M` insns in `41.20 ms` = `127.25 M insn/s` on RTX A5500). Formal Z3 jump table bounds proving (`ARM64JumpTableProver`) extracts switch targets and case counts N. | GPU sweeps optional for ≥ 5 MB (NumPy SIMD handles < 5 MB). Formal jump table bounds proving requires `[smt]` (`z3-solver`). |
 | **`lifters` (`[smt]` — Zero-JVM P-Code Lifter & Z3 Prover)** | Pure-Python ARM64/x86_64 → P-code lifter (integer, exclusive memory, SIMD vector math, ARMv8.1-A atomics) and Z3 equivalence prover (`SMTPcodeVerifier`). | **Bounded Subset / Sound `UNKNOWN`:** Standalone lifting covers bounded instruction subsets; `SMTPcodeVerifier` intentionally returns `UNKNOWN` (`equivalent=False`) on floating-point ops, unhandled instructions, or loops exceeding the unroll bound. |
 
 Each package has its own README under [`src/superghidra/`](src/superghidra/).
@@ -342,20 +402,30 @@ Detailed logs and measurement methodology are documented in [`docs/benchmarks/EM
 **From PyPI:**
 
 ```bash
+# Core package (ELF/PE/Mach-O loaders, RTTI/MFC recovery, Rust/Go audit, IL2CPP)
 pip install superghidra
+
+# Recommended: Core + Z3 formal verification (required for bounds-proven jump tables)
+pip install "superghidra[smt]"
+
+# Full installation with all optional backends
+pip install "superghidra[all]"
 ```
 
-Optional acceleration and integration extras:
+> [!IMPORTANT]
+> **Bounds-Proven Jump Tables Require `[smt]`**: To formally prove ARM64 switch jump tables and case counts, install `superghidra[smt]` (or `superghidra[all]`), which installs `z3-solver`. A plain `pip install superghidra` detects candidate dispatch structures but cannot prove case bounds without the solver, emitting a warning.
 
-```bash
-pip install "superghidra[all]"       # all optional backends
-pip install "superghidra[smt]"       # Z3 P-code equivalence checker
-pip install "superghidra[gpu]"       # WGPU compute shaders (ADRP/prologue sweeps)
-pip install "superghidra[storage]"   # LZ4 & Zstandard 16 KB page compression
-pip install "superghidra[ghidra]"    # PyGhidra bridge & JVM headless bindings
-pip install "superghidra[frida]"     # Live emulator runtime inspection
-pip install "superghidra[rea]"       # REA ecosystem adapter and MCP protocol bridge
-```
+### Optional Dependency Extras
+
+| Extra | Command | What It Enables |
+| :--- | :--- | :--- |
+| `[smt]` | `pip install "superghidra[smt]"` | Z3 solver backend (`z3-solver`). Required for `ARM64JumpTableProver` switch bounds proofs and `SMTPcodeVerifier` semantic equivalence checks. Plain `pip install superghidra` emits a warning and returns unproven targets when solving switch bounds. |
+| `[gpu]` | `pip install "superghidra[gpu]"` | WGPU compute shaders (`wgpu`). Accelerates large ARM64 `ADRP` and function prologue sweeps (≥ 5 MB). |
+| `[storage]` | `pip install "superghidra[storage]"` | LZ4 & Zstandard 16 KB page compression (`lz4`, `zstandard`). |
+| `[ghidra]` | `pip install "superghidra[ghidra]"` | PyGhidra bridge & JVM headless bindings (`pyghidra`). |
+| `[frida]` | `pip install "superghidra[frida]"` | Live Android emulator runtime memory inspection (`frida`). |
+| `[rea]` | `pip install "superghidra[rea]"` | REA ecosystem adapter and MCP protocol bridge (`mcp`, `pydantic`). |
+| `[all]` | `pip install "superghidra[all]"` | All optional backends listed above. |
 
 **From source (development):**
 
@@ -446,9 +516,14 @@ print(sg.SMTPcodeVerifier().verify_equivalence(ops, ops).equivalent)
 ## Known Limitations & 1.0 vs 1.x Scope Boundaries
 
 - **Mach-O Dyld Chained Fixups & Objective-C Recovery:** As of 1.0.0, dyld chained fixups (`LC_DYLD_CHAINED_FIXUPS`), ARM64e PAC authentication, Swift 5 nominal types, and 64-bit Objective-C metadata are dereferenced and parsed standalone (`superghidra.formats.apple_dispatch`).
+- **Hugo Universal Binary Intel Slice:** In Hugo's universal binary, the Intel (x86_64) slice remains missing 139 links; symbol stub recovery does not resolve all 139 missing links in that slice.
+- **Electron Jump-Table Analysis Duration:** A full bounds-proven jump-table analysis pass across large binaries such as Electron takes approximately 3 minutes.
+- **Static Library Dependency Check Performance:** Static library dependency inspection runs in approximately 7 seconds on binaries of Hugo's size.
+- **Unity IL2CPP Coverage:** IL2CPP metadata recovery (`superghidra il2cpp-recover`) recovers assemblies, types, methods, and string pools from `global-metadata.dat` (versions 24–39) and is tested against synthetic fixtures and Android samples. It has not been tested on public Unity iOS builds due to the absence of legal public Unity iOS sample binaries.
+- **Z3 Solver Dependency for Jump Tables:** Formally bounds-proving ARM64 jump tables requires `pip install "superghidra[smt]"`. Without `[smt]`, `ARM64JumpTableProver` detects candidate branch structures but leaves `proven=False` and warns that `z3-solver` is not installed.
 - **C++ RTTI Formats:** Class recovery targets MSVC RTTI (`CompleteObjectLocator`, `TypeDescriptor`, `ClassHierarchyDescriptor`) and MFC `CRuntimeClass`. GNU Itanium ABI C++ RTTI (`type_info`, `_vptr` prefix structures) is planned for 1.x.
 - **MFC Class Recovery Testing:** Precision and recall (100% precision, 0 false positives on non-MFC binaries such as `libcrypto-3.dll`) are verified in automated CI using synthetic redistributable PE fixtures (`sample_mfc_x64.dll`). Real commercial applications (such as WinMerge with 713 RTTI and 160 MFC classes) are evaluated manually.
-- **MCP Server Package:** The Model Context Protocol server is hosted in [`SuperghidraMCP`](https://github.com/yuatemycat/SuperGhidraMCP) and published on PyPI as `superghidra-mcp` and `superghidra-mcp-cli` (`pip install superghidra-mcp`). For native REA adapter integrations in Python applications, install `superghidra[rea]`.
+- **MCP Server Package:** The Model Context Protocol server is hosted in [`SuperghidraMCP`](https://github.com/yuatemycat/SuperGhidraMCP) and published on PyPI as `superghidra-mcp` and `superghidra-mcp-cli` (`pip install superghidra-mcp`). It defines 61 MCP tools with 56 registered on the active server. For native REA adapter integrations in Python applications, install `superghidra[rea]`.
 - **Standalone P-Code Decompilation:** The zero-JVM CLI decompiler (`superghidra decompile`) is an experimental prototype supporting basic integer register operations, function prologues, direct calls, and preliminary ARM64 lowering (11 of 154 exports decompiled, 7 compiling across four test DLLs). For production decompilation, use the Ghidra-backed daemon oracle (`python -m superghidra.core.ghidra_oracle decompile <addr>`).
 - **PDB Export:** PDB export is experimental: it emits MSF 7.0 structures with prototype DBI and public symbol records, but lacks MSVC-compatible hash streams, symbol record streams, and CodeView type (TPI) streams. DWARF 5 export is the supported path for external tooling.
 - **SMT Verification Incompleteness:** The SMT checker is sound but incomplete. Floats, calls, unhandled ops and long loops return `UNKNOWN` by design to prevent false equivalence.
@@ -462,7 +537,7 @@ More detail is in [PLAN.md](PLAN.md).
 ```
 src/superghidra/             canonical package, split into 7 domain subsystems
 src/superghidra/compat/      backward-compatibility namespace shims
-tests/                       domain-isolated pytest suites (790+ tests)
+tests/                       domain-isolated pytest suites (1,000+ tests)
 benchmarks/                  reproducible benchmark harnesses and measurement scripts
 docs/                        benchmark specifications, walkthroughs, and architecture docs
 ghidra_extension_skeleton/   Java BufferFile compression extension

@@ -866,3 +866,31 @@ def test_unresolved_targets_mark_table_unproven():
     assert table.bounds_n == 4
     assert table.unresolved_cases == 1
     assert table.proven is False, "Unresolved targets must invalidate proof status"
+
+
+def test_missing_z3_warns_and_marks_unproven(monkeypatch):
+    """30. Verifies warning and unproven return when z3 is missing."""
+    import warnings
+    from superghidra.acceleration import jump_table_prover
+
+    monkeypatch.setattr(jump_table_prover, "HAS_Z3", False)
+    monkeypatch.setattr(jump_table_prover, "_WARNED_MISSING_Z3", False)
+
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        prover = jump_table_prover.ARM64JumpTableProver()
+        assert len(recorded) == 1
+        assert 'pip install "superghidra[smt]"' in str(recorded[0].message)
+
+        # Calling prove_bounds directly does not duplicate warning because _WARNED_MISSING_Z3 is True
+        n, proven = prover.prove_bounds(
+            bound_imm=7,
+            cond="HI",
+            cmp_reg=0,
+            index_reg=0,
+            table_target_reg=1,
+            dispatch_reg=1,
+        )
+        assert n == 8
+        assert proven is False
+        assert len(recorded) == 1

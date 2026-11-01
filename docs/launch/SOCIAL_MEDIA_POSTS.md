@@ -4,7 +4,7 @@ Copy-paste ready launch copy tailored for technical communities across X/Twitter
 
 - **Primary Repository:** `https://github.com/yuatemycat/SuperGhidra`
 - **Companion MCP Server:** `https://github.com/yuatemycat/SuperGhidraMCP`
-- **PyPI:** `pip install superghidra`
+- **PyPI:** `pip install superghidra` (or `pip install "superghidra[smt]"` for Z3 switch table proofs)
 - **Key Media Assets to Attach:**
   - Demo GIF: `docs/assets/demo.gif` (RTTI & MFC recovery in ~1s)
   - Architecture SVG/PNG: `docs/assets/architecture-dark.svg`
@@ -14,7 +14,7 @@ Copy-paste ready launch copy tailored for technical communities across X/Twitter
 ## 1. X / Twitter (Launch Thread)
 
 ### Tweet 1 (Hook + Summary)
-I open-sourced SuperGhidra (`pip install superghidra`): a persistent, lock-free Ghidra daemon with MCP support, a Z3 P-code verifier, and zero-JVM MSVC/MFC C++ class recovery.
+I open-sourced SuperGhidra (`pip install "superghidra[smt]"`): a persistent, lock-free Ghidra daemon with 56 MCP tools, Z3 bounds-proven ARM64 jump tables, Rust/Go audit, and zero-JVM MSVC/MFC C++ recovery.
 
 Solves the two biggest headaches with Ghidra scripting: 5–15s JVM startup overhead and `.rep` lock collisions while the GUI is open.
 
@@ -43,11 +43,11 @@ SuperGhidra puts an Obligation Ledger Gate in front of overlay commits: candidat
 Benchmark note: The 22.62% HumanEval-Decompile pass rate (25.26% on held-out test split) measures our deterministic C rewriter (`compilable_filter.py`), not neural model weights.
 
 ### Tweet 5 (Links & CTA)
-Everything is open source under AGPL-3.0 with dual-OS CI (747 tests on Linux & Windows):
+Everything is open source under AGPL-3.0 with dual-OS CI (1,000+ tests on Linux & Windows):
 
 - Core repo: https://github.com/yuatemycat/SuperGhidra
-- MCP Server (42 tools for Claude Desktop, Cursor, Antigravity): https://github.com/yuatemycat/SuperGhidraMCP
-- v0.3.1 Release: https://github.com/yuatemycat/SuperGhidra/releases/tag/v0.3.1
+- MCP Server (56 tools registered, 61 defined for Claude, Cursor, Antigravity): https://github.com/yuatemycat/SuperGhidraMCP
+- v1.0.7 Release: https://github.com/yuatemycat/SuperGhidra/releases/tag/v1.0.7
 
 Feedback welcome on the overlay conflict model and P-code lifter coverage!
 
@@ -57,33 +57,45 @@ Feedback welcome on the overlay conflict model and P-code lifter coverage!
 
 ### Post A: `r/ReverseEngineering` & `r/ghidra`
 
-**Title:** SuperGhidra: Warm lock-free Ghidra daemon, non-destructive JSON write overlays, and standalone MSVC/MFC class recovery
+**Title:** SuperGhidra: Warm lock-free Ghidra daemon, non-destructive JSON write overlays, standalone MSVC/MFC & Rust/Go recovery, and Z3-proven jump tables
 
 **Body:**
 ```markdown
 Hi r/ReverseEngineering,
 
-I wrote and open-sourced **SuperGhidra** (https://github.com/yuatemycat/SuperGhidra) to solve two practical bottlenecks when scripting Ghidra and integrating external tools or agents:
+I wrote and open-sourced **SuperGhidra** (https://github.com/yuatemycat/SuperGhidra) to solve practical bottlenecks when scripting Ghidra and integrating external tools or agents:
 
 1. **JVM Cold-Starts & `.rep` Lock Contention:**
    Every `analyzeHeadless` invocation costs 5–15 seconds of JVM startup. More painfully, opening a `.rep` project in Ghidra CodeBrowser acquires an exclusive OS lock, causing background scripts or AI agents to fail with `LockException`.
    SuperGhidra keeps a single `readOnly=True` Ghidra session warm in a local daemon (`127.0.0.1:5073`) backed by a 64 KB shared-memory ring buffer (<50 µs roundtrip) and SQLite L2 cache. All renames, comments, and recovered types are routed to a non-destructive `ghidra_overlay.json` journal. You sync them into your active GUI session using a generated FlatProgramAPI script (`superghidra overlay-sync --watch`), so your GUI and background scripts never fight over locks.
 
-2. **Standalone MSVC RTTI & MFC `Serialize()` Tracing (No JVM):**
-   Ghidra lacks built-in MFC `CRuntimeClass` recovery and `CArchive` serialization layout tracing. SuperGhidra includes pure-Python PE/ELF/Mach-O parsers that extract MSVC RTTI structures (`CompleteObjectLocator`, class hierarchy descriptors, vtables) and trace MFC dynamic class declarations. On Microsoft's `mfc140u.dll`, it extracts 755 RTTI classes and 391 MFC classes in ~1 second without running Ghidra or Java. It can export these directly to DWARF 5, Breakpad symbols, or JSON.
+2. **Standalone MSVC RTTI, MFC `Serialize()`, Rust/Go & Unity IL2CPP (No JVM):**
+   - **MSVC & MFC:** Extracts MSVC RTTI structures (`CompleteObjectLocator`, class hierarchy descriptors, vtables) and traces MFC dynamic class declarations / `CArchive::Serialize()`. On Microsoft's `mfc140u.dll`, it extracts 755 RTTI classes and 391 MFC classes in ~1 second without running Ghidra or Java.
+   - **Compiled Rust & Go (`superghidra crate-audit`):** Recovers cargo-auditable `.dep-v0` crate dependency trees, versions, and `/rustc/<hash>/` commit hashes from Rust binaries. Inspects `.go.buildinfo` and `pclntab` headers to extract Go compiler versions, module paths, and runtime function symbols.
+   - **Unity IL2CPP (`superghidra il2cpp-recover`):** Parses `global-metadata.dat` (versions 24–39) to extract assemblies, types, methods, fields, and string literals, optionally correlating method indices with native RVAs.
 
-3. **P-Code Lifter & Z3 Equivalence Prover:**
-   Includes a zero-JVM ARM64 and x86 P-code lifter with a Z3 solver backend. When simplifying decompiled basic blocks or validating variable renamings, it tests whether the candidate C expression mathematically matches the lifted IR. To ensure soundness, floating-point instructions, unsupported opcodes, or loops past unroll limits strictly return `UNKNOWN` rather than false positives.
+3. **Z3 Bounds-Proven ARM64 Jump Table Recovery (`pip install "superghidra[smt]"`):**
+   Pairs candidate detection (`CMP`, `B.cond`, `ADR`/`ADRP+ADD`, `LDRSW`/`LDRB`/`LDRH`/`LDR`, `BR indirect`) with formal Z3 unsigned bounds verification to prove exact case counts N and target mappings. Handles both shifted byte tables (shift 0 from LLVM/Swift/Chromium) and word tables (shift 2 from Apple Clang).
+   *Note on installation:* The jump-table prover requires `z3-solver`. Be sure to run `pip install "superghidra[smt]"` (or `pip install "superghidra[all]"`); a plain `pip install superghidra` will warn that the SMT solver is missing and leave candidate tables unproven.
+
+4. **P-Code Lifter & Z3 Equivalence Prover:**
+   Includes a zero-JVM ARM64 and x86 P-code lifter with a Z3 solver backend. When simplifying basic blocks or validating variable renamings, it tests whether candidate expressions mathematically match the lifted IR. To ensure soundness, floating-point instructions, unsupported opcodes, or loops past unroll limits strictly return `UNKNOWN` rather than false positives.
+
+**Known Limitations & Measured Timing:**
+- **Hugo Universal Binary Intel Slice:** In Hugo's universal binary, the Intel (x86_64) slice remains missing 139 links; symbol stub recovery does not resolve all 139 missing links in that slice.
+- **Electron Jump-Table Analysis Duration:** A full bounds-proven jump-table analysis pass across large binaries such as Electron takes ~3 minutes.
+- **Library Check Duration:** Static library dependency inspection runs in ~7 seconds on binaries of Hugo's size.
+- **Unity IL2CPP iOS Coverage:** IL2CPP metadata recovery is verified on synthetic fixtures and Android packages, but is untested on public Unity iOS builds due to the absence of legal public Unity iOS binaries.
 
 **Benchmark Caveat:**
 In our `HumanEval-Decompile` benchmarks (1,300 evaluable functions compiled with GCC `O0`–`O3`), stock Ghidra pseudo-C compiled and passed 8.23% (107/1,300), raw IDA passed 18.69% (243/1,300; 19.00% with `defs.h`), and Ghidra output passed through SuperGhidra's `compilable_filter.py` passed 22.62% (294/1,300 full corpus, and 25.26% / 98/388 on the function-disjoint held-out 30% test split). Note that `compilable_filter.py` is a deterministic AST/token rewriter for Ghidra's pseudo-types (`undefined8`, `CONCAT44`, `SUB84`), not an LLM.
 
 **Links:**
 - GitHub: https://github.com/yuatemycat/SuperGhidra
-- MCP Server: https://github.com/yuatemycat/SuperGhidraMCP
-- PyPI: `pip install superghidra`
+- MCP Server (56 registered tools, 61 defined): https://github.com/yuatemycat/SuperGhidraMCP
+- PyPI: `pip install "superghidra[smt]"`
 
-I'd appreciate feedback on the overlay synchronization workflow and any odd MSVC/MFC binaries you test against it!
+I'd appreciate feedback on the overlay synchronization workflow and any odd binaries you test against it!
 ```
 
 ---
@@ -100,7 +112,7 @@ If you've tried using AI coding agents (Claude Desktop, Cursor, Antigravity, Cla
 1. Connecting multiple agents to Ghidra's headless API or Python bridge either causes `.rep` lock collisions or corrupts the project database.
 2. Unchecked LLMs hallucinate structure definitions, rename incorrect functions, and invent nonexistent struct fields.
 
-We built **SuperGhidra** and its companion MCP server **SuperGhidraMCP** (42 tools) to provide safe, concurrent multi-agent reverse engineering:
+We built **SuperGhidra** and its companion MCP server **SuperGhidraMCP** (56 registered tools, 61 defined) to provide safe, concurrent multi-agent reverse engineering:
 
 - **Isolated Session Forks:** Agents operate on isolated forks against a warm, read-only Ghidra oracle daemon (`127.0.0.1:5073`). Reads hit a shared-memory ring buffer (<50 µs) or SQLite cache; writes go to a private delta journal.
 - **Obligation Ledger Gate:** Candidate struct commits and symbol renames are gated through deterministic verification (`VTableSlotVerifier`, `FieldDisplacementVerifier`, `AllocationSizeVerifier`). If an agent hallucinates a 3-slot vtable when the binary shows 7 dereferences, the commit is rejected.
@@ -134,16 +146,17 @@ We built **SuperGhidra** and its companion MCP server **SuperGhidraMCP** (42 too
 **Channels:** `#tools`, `#reverse-engineering`, `#mcp`, `#announcements`
 
 ```text
-Hey everyone! Just released **SuperGhidra 0.3.1** — high-performance Python tooling and a lock-free daemon for Ghidra:
+Hey everyone! Just released **SuperGhidra 1.0.7** — high-performance Python tooling and a lock-free daemon for Ghidra:
 
 - 🚀 **Zero `.rep` Lock Contention:** Keeps a read-only Ghidra instance warm on `127.0.0.1:5073` (<50 µs IPC, SQLite L2 cache). Writes go to `ghidra_overlay.json` and sync live into an open Ghidra GUI window with `superghidra overlay-sync --watch`.
-- ⚡ **Pure-Python MSVC & MFC Recovery:** Recovers MSVC RTTI class trees, MFC `CRuntimeClass` descriptors, and `CArchive::Serialize()` field layouts directly from PE binaries without touching the JVM or launching Ghidra (~1s on 750+ classes).
+- ⚡ **Pure-Python Metadata Recovery:** Recovers MSVC RTTI class trees, MFC `CRuntimeClass` descriptors, compiled Rust crate `.dep-v0` trees, Go `.go.buildinfo`/`pclntab` dependencies, and Unity IL2CPP `global-metadata.dat` structures without launching Ghidra.
+- 🎯 **Z3 Bounds-Proven Jump Tables:** Disassembles ARM64 switch tables and proves case bounds N using Z3 SMT solving.
 - 🛡️ **Formal Z3 Equivalence Gate:** Verifies rewritten C logic against lifted ARM64/x86 P-code via Z3, rejecting hallucinated agent mutations.
-- 🔌 **42-Tool MCP Server:** Built-in multi-agent session forks for Claude Desktop, Cursor, Antigravity, and Claude Code.
+- 🔌 **56-Tool MCP Server (61 Defined):** Built-in multi-agent session forks for Claude Desktop, Cursor, Antigravity, and Claude Code.
 
 GitHub: https://github.com/yuatemycat/SuperGhidra
-Release v0.3.1: https://github.com/yuatemycat/SuperGhidra/releases/tag/v0.3.1
-Install: `pip install superghidra`
+Release v1.0.7: https://github.com/yuatemycat/SuperGhidra/releases/tag/v1.0.7
+Install: `pip install "superghidra[smt]"`
 ```
 
 ---
@@ -153,7 +166,7 @@ Install: `pip install superghidra`
 ```text
 Reverse engineering stripped enterprise binaries with Ghidra often runs into two operational bottlenecks: 5–15 second JVM startup latency per headless script invocation, and exclusive file lock collisions on .rep projects whenever the interactive Ghidra GUI is open.
 
-To solve this, I've open-sourced SuperGhidra (v0.3.1) and its companion Model Context Protocol (MCP) server:
+To solve this, I've open-sourced SuperGhidra (v1.0.7) and its companion Model Context Protocol (MCP) server:
 
 Architecture highlights:
 1. Lock-Free Oracle Daemon: Decouples binary read operations from write mutations. A persistent background daemon serves queries across an L1 shared-memory ring buffer (<50 µs roundtrip) and an L2 SQLite cache (>100k req/s).
@@ -161,10 +174,10 @@ Architecture highlights:
 3. Zero-JVM C++ Recovery: Standalone PE/ELF parsers recover MSVC RTTI hierarchies and MFC CRuntimeClass / CArchive field layouts in pure Python without launching a JVM.
 4. Formal SMT Verification: Includes a pure-Python P-code lifter coupled with a Z3 solver to verify semantic equivalence before committing speculative code restructurings.
 
-The repository includes a 6-job CI matrix across Ubuntu and Windows Server with 747 automated tests.
+The repository includes a 6-job CI matrix across Ubuntu and Windows Server with 1,000+ automated tests.
 
 Source Code: https://github.com/yuatemycat/SuperGhidra
-Release Notes: https://github.com/yuatemycat/SuperGhidra/releases/tag/v0.3.1
+Release Notes: https://github.com/yuatemycat/SuperGhidra/releases/tag/v1.0.7
 
 #ReverseEngineering #Cybersecurity #SoftwareEngineering #Ghidra #Python #Compilers #BinaryAnalysis
 ```

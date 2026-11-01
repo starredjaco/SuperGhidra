@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import struct
+import warnings
 from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,21 @@ except ImportError:
 import importlib.util
 
 HAS_NUMPY = importlib.util.find_spec("numpy") is not None
+
+_WARNED_MISSING_Z3 = False
+
+
+def _warn_missing_z3() -> None:
+    """Warn when z3-solver is absent during jump table formal proving."""
+    global _WARNED_MISSING_Z3
+    if not _WARNED_MISSING_Z3:
+        _WARNED_MISSING_Z3 = True
+        msg = (
+            "z3-solver is not installed. Jump tables cannot be formally proven. "
+            "Install with: pip install \"superghidra[smt]\""
+        )
+        logger.warning(msg)
+        warnings.warn(msg, UserWarning, stacklevel=3)
 
 
 @dataclasses.dataclass
@@ -85,6 +101,8 @@ class ARM64JumpTableProver:
     def __init__(self, use_gpu: bool = False) -> None:
         self.use_gpu = use_gpu
         self._z3_cache: dict[tuple[int, str], bool] = {}
+        if not HAS_Z3:
+            _warn_missing_z3()
 
     def prove_bounds(
         self,
@@ -133,6 +151,7 @@ class ARM64JumpTableProver:
             return expected_n, self._z3_cache[cache_key]
 
         if not HAS_Z3:
+            _warn_missing_z3()
             return expected_n, False
 
         try:
