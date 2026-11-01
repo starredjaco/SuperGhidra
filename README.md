@@ -386,6 +386,64 @@ Addresses the dataset contamination problem in neural decompiler benchmarks (suc
 
 > **HumanEval-Decompile Caveat (Deterministic C Rewriter, Not Neural Inference):** The `22.62%` (`294/1,300` full corpus, plus `25.26%` on the 30% function-disjoint held-out test split) score measures syntactic recompilability and unit-test execution pass rate produced by [`CompilableDecompilerFilter`](src/superghidra/core/compilable_filter.py) — a deterministic post-processing rewriter that strips stack-canary boilerplate, normalizes Ghidra pseudo-types (`undefined8`, `CONCAT44`, `SUB84`), and injects symmetric Hex-Rays `defs.h` compatibility macros (`__int64`, `LODWORD`, `HIDWORD`, `BYTEn`) for IDA Pro baselines. No neural model weights or LLM calls are invoked in this benchmark.
 
+### Tested on Real macOS & iOS Binaries (v1.0.7)
+
+Fixup decoding, Z3-proven ARM64 jump tables and Rust/Go auditing were checked against independent reference tools on shipping macOS and iOS binaries. Everything ran on the PyPI wheel (`pip install "superghidra[smt]==1.0.7"`) on Linux x86_64 (8-core Intel Xeon), with no Ghidra installed.
+
+**Public set** (15 files, 18 slices; `dispatch s` = `apple-dispatch` wall time, `JT s` = jump-table pass):
+
+| Sample | Platform / Arch | Fixup Format | Fixups Matched / Total (LIEF) | Proven JTs (Destinations Verified) | Go / Rust Audit | dispatch s / JT s |
+| :--- | :--- | :---: | :---: | :---: | :--- | :---: |
+| [Electron Framework](https://github.com/electron/electron/releases/tag/v45.2.1) v45.2.1 | macOS arm64 | chained 2 | 671,510 / 671,510 | 1,427 / 1,427 | — | 2.20 / 185.7 |
+| chrome_crashpad_handler (same Electron zip) | macOS arm64 | chained 2 | 3,755 / 3,755 | 2 / 2 | — | 0.05 / 0.32 |
+| libvk_swiftshader.dylib (same Electron zip) | macOS arm64 | chained 2 | 46,729 / 46,729 | 226 / 226 | — | 0.17 / 1.30 |
+| [AltStore](https://github.com/altstoreio/AltStore/releases) 2.3 Classic | iOS arm64 | chained 6 | 22,720 / 22,720 | 80 / 80 | — | 0.16 / 0.55 |
+| AltStoreCore.framework (same IPA) | iOS arm64 | chained 6 | 9,014 / 9,014 | 8 / 8 | — | 0.08 / 0.40 |
+| [SideStore](https://github.com/SideStore/SideStore/releases) 0.7.0-alpha | iOS arm64 | chained 6 | 65,902 / 65,902 | 166 / 166 | — | 0.30 / 1.28 |
+| OpenSSL.framework (same SideStore IPA) | iOS arm64 | legacy dyld_info | 28,446 / 28,446 | 36 / 36 | — | 0.11 / 0.60 |
+| [Dopamine](https://github.com/opa334/Dopamine/releases) 3.0.12 libjailbreak.dylib | iOS arm64 / arm64e | chained 6 / chained 12 | 646 / 646 · 654 / 654 | 0 found | — | 0.04 |
+| Dopamine 3.0.12 libchoma.dylib | iOS arm64 / arm64e | dyld_info / chained 1 | 144 / 144 · 143 / 143 | 0 found | — | 0.04 |
+| [gh](https://github.com/cli/cli/releases/tag/v2.103.3) 2.103.3 | macOS arm64 | legacy dyld_info | 179,057 / 179,057 | 189 / 189 | Go go1.27.3, 159 deps | 0.62 / 7.93 |
+| [fzf](https://github.com/junegunn/fzf/releases/tag/v0.74.5) 0.74.5 | macOS arm64 | legacy dyld_info | 21,387 / 21,387 | 48 / 48 | Go go1.27.2, 6 deps | 0.10 / 0.46 |
+| [hugo](https://github.com/gohugoio/hugo/releases/tag/v0.169.0) 0.169.0 universal | macOS arm64 | legacy dyld_info | 347,356 / 347,356 | 408 / 408 | Go go1.27.3, 101 deps | 1.29 / 18.40 |
+| hugo 0.169.0 universal | macOS x86_64 | legacy dyld_info | **⚠ known gap: parser error** | — | — | — |
+| [ripgrep](https://github.com/BurntSushi/ripgrep/releases/tag/15.2.0) 15.2.0 | macOS arm64 | legacy dyld_info | 12,576 / 12,576 | 36 / 36 | Rust, 16 crates | 0.09 / 0.48 |
+| [fd](https://github.com/sharkdp/fd/releases/tag/v10.5.0) 10.5.0 | macOS arm64 | legacy dyld_info | 10,083 / 10,083 | 20 / 20 | Rust, 23 crates | 0.06 / 0.42 |
+| [bat](https://github.com/sharkdp/bat/releases/tag/v0.26.1) 0.26.1 | macOS arm64 | legacy dyld_info | 11,841 / 11,841 | 35 / 35 | Rust, 53 crates | 0.07 / 0.49 |
+
+**Held-out set** (never used during development): 30 slices from 22 binaries. They cover macOS Swift apps, iOS apps with embedded frameworks, arm64e dylibs, Intel legacy slices, Go and Rust CLIs, and a Unity IL2CPP game.
+
+| Metric | Result |
+| :--- | :---: |
+| Fixups exact vs. LIEF | **30 / 30 slices** |
+| Proven jump tables with correct destinations | **5,238 / 5,238** |
+| False proofs | **0** |
+
+The held-out names are withheld on purpose, so the set stays unseen by future tuning.
+
+**Methodology:**
+- **Fixups:** compared one by one with [LIEF](https://github.com/lief-project/LIEF) 1.0.0 (address, kind, target), plus 20 random values per slice checked by hand. On some arm64e executables, LIEF adds the image base twice to plain rebases. Those cases were decoded from the raw pointers by hand, and SuperGhidra was correct.
+- **Jump tables:** every proven table's destinations were recomputed by an independent capstone-based decoder. Tables it flagged were disassembled and checked by hand; all were decoder artifacts.
+- **Go / Rust:** Go results were checked against an independent `.go.buildinfo` parser. Rust results were checked against `cargo-auditable` (`.dep-v0`) data where present, otherwise against crate names in panic paths.
+- **Install:** `[smt]` (Z3) is required. With a plain `pip install superghidra`, every jump table comes back unproven.
+
+**Coverage, not completeness:** "100%" means every table SuperGhidra *proves* is right. It does not mean it finds every switch. As a rough upper bound, a capstone heuristic counts likely switch dispatches (with a bounds check), and SuperGhidra proves fewer:
+
+| Binary | Proven tables | Capstone count |
+| :--- | :---: | :---: |
+| Electron | 1,427 | ~2,392 |
+| SideStore | 166 | ~329 |
+| hugo arm64 | 408 | ~426 |
+
+**Known limitations (v1.0.7):**
+- `il2cpp-recover` runs out of memory on Unity metadata v31 (~14 GB on a 9 MB file). The header layout is wrong for v31.
+- `crate-audit` reports 0 crates (as "observed absence") for Rust apps built with `cargo vendor`.
+- No jump tables are found in arm64e code that uses the hardened switch pattern (`csel` index clamp).
+- There is no x86_64 jump-table prover. Intel slices get fixup checks only.
+- hugo's Intel slice fails to parse (`'MachOSection' object has no attribute 'reserved2'`).
+- The Electron jump-table pass takes ~3 minutes and ~2.2 GB of RAM.
+- The prover has stalled occasionally (minutes, not seconds). It could not be reproduced on demand.
+
 ### Dual-OS Test Matrix (GitHub Actions CI)
 
 Full 6-job matrix evaluated with `pytest tests -v -rs -rx --strict-markers` (all integration tests run; skipped reasons reported):
