@@ -928,8 +928,13 @@ def compute_matrix_verdicts(metrics: dict) -> dict:
 
 class Section4ComparisonMatrixHarness:
     """
-    Runs synthetic in-memory checks across the 12 rows of the Section 4
-    comparison matrix and returns a summary dictionary.
+    Internal smoke test harness executing synthetic in-memory sanity checks across
+    the 12 pipeline interfaces (microcode MBA, deflattener, usercall marshalling,
+    appcall frame diffing, CFG signature index, struct recovery, block store,
+    MCP dispatch, CRDT session forks, dataflow reachability, D-LiFT gates, and struct shift).
+
+    Note: These are synthetic in-process contract verification tests, not empirical
+    comparative benchmarks against external third-party decompilers.
     """
 
     @classmethod

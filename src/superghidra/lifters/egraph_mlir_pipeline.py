@@ -1304,6 +1304,20 @@ class IfElseRegion(RegionNode):
         return out
 
 
+@dataclass
+class LoopBackEdgeRegion(RegionNode):
+    """Represents an unstructured back-edge in cyclic CFGs to avoid silent code omission."""
+    target_block_id: int
+
+    def to_mlir(self, indent: int = 0) -> str:
+        pad = "  " * indent
+        return f"{pad}// loop back-edge to ^bb{self.target_block_id}"
+
+    def to_c(self, indent: int = 0) -> str:
+        pad = "    " * indent
+        return f"{pad}/* loop back-edge to bb{self.target_block_id} */"
+
+
 class MLIRGotoFreeRestructurer:
     """
     In-memory acyclic DAG restructurer for P-Code control-flow graphs.
@@ -1311,7 +1325,7 @@ class MLIRGotoFreeRestructurer:
     and C representations.
 
     Note: This is an internal DAG restructurer, not an LLVM MLIR compiler binding.
-    Backward loop edges and cyclic control flow are dropped/unsupported.
+    Backward loop edges are explicitly represented with LoopBackEdgeRegion markers.
     """
     def restructure_function(self, func: PCodeFunction) -> Tuple[str, str]:
         visited: Set[int] = set()
@@ -1369,8 +1383,10 @@ class MLIRGotoFreeRestructurer:
         stop_at: int | None,
         visited: Set[int],
     ) -> RegionNode:
-        if blk_id == stop_at or blk_id not in func.blocks or blk_id in visited:
+        if blk_id == stop_at or blk_id not in func.blocks:
             return SeqRegion([])
+        if blk_id in visited:
+            return LoopBackEdgeRegion(target_block_id=blk_id)
 
         visited.add(blk_id)
         blk = func.blocks[blk_id]

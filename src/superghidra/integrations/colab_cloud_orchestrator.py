@@ -16,6 +16,10 @@ Implements Frontier 4:
 - Integration with Zero-JVM PCodeLifter and systolic array tensor generator (converting P-code to bfloat16 tensors).
 - Automated export and packaging of reconstructed symbols and evidence ledger.
 - Generates official Google Colab Jupyter Notebook (nbformat v4) for one-click headless cloud execution.
+
+Note: Stages 2 (evidence ledger) and 3 (symbol reconstruction) within run_reconstruction_pipeline
+are client-side packaging scaffolds for remote Colab worker notebooks. Tensor bfloat16
+quantization truncates 32-bit floats to uint16 for compact network serialization.
 """
 
 from __future__ import annotations

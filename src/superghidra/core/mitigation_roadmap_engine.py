@@ -158,6 +158,10 @@ class LeafXRefInversionEngine:
         raw_skeleton_c: str,
         gnn_embedding_16d: Sequence[float],
     ) -> Dict[str, Any]:
+        """
+        Demonstration heuristic: inverts callers based on anchored leaf references
+        (sample rules for ProductionQueue/CArchive patterns) and cleans artificial state-machine boilerplate.
+        """
         matching_leaves = [x for x in self._leaf_xrefs if x.caller_rva == caller_rva]
         variable_rename_map: Dict[str, str] = {}
         inferred_role = "UnknownObfuscatedHandler"

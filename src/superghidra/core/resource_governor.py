@@ -32,6 +32,7 @@ Implements Section 8 of GHIDRA_REFORMATION_ARCHITECTURAL_SPEC.md:
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import dataclasses
 import enum
 import logging
@@ -406,28 +407,35 @@ class DecompileProcessPoolReaper:
 
 class PersistentDecompilerDBCache:
     """
-    In-memory cache simulating the DecompilerCacheDBAdapter table interface inside .rep/db.buffers.
-    Persists decompiled representations in memory across queries to avoid repeat decompiler work.
+    Bounded in-memory LRU cache simulating the DecompilerCacheDBAdapter table interface.
+    Stores decompiled function representations in memory across queries with LRU eviction
+    to prevent unbounded memory consumption.
     """
 
-    def __init__(self):
-        self._cache: Dict[int, Dict[str, Any]] = {}
+    def __init__(self, maxsize: int = 2048):
+        self._cache: OrderedDict[int, Dict[str, Any]] = OrderedDict()
+        self.maxsize = maxsize
         self.hits = 0
         self.misses = 0
 
     def put(self, func_addr: int, c_code: str, token_tree: Dict[str, Any] | None = None) -> None:
-        """Persists decompilation result to cache."""
+        """Stores decompilation result in bounded LRU memory cache."""
+        if func_addr in self._cache:
+            self._cache.move_to_end(func_addr)
         self._cache[func_addr] = {
             "address": func_addr,
             "c_code": c_code,
             "token_tree": token_tree or {},
             "timestamp": time.time(),
         }
+        if len(self._cache) > self.maxsize:
+            self._cache.popitem(last=False)
 
     def get(self, func_addr: int) -> Dict[str, Any] | None:
         """Retrieves decompiled result in < 1 ms without spawning decompile.exe."""
         if func_addr in self._cache:
             self.hits += 1
+            self._cache.move_to_end(func_addr)
             return self._cache[func_addr]
         self.misses += 1
         return None
@@ -437,6 +445,10 @@ class PersistentDecompilerDBCache:
 
     def clear(self) -> None:
         self._cache.clear()
+
+
+# Canonical maintainer alias
+InMemoryDecompilerCache = PersistentDecompilerDBCache
 
 
 # ==============================================================================

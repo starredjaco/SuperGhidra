@@ -158,6 +158,25 @@ class TestResourceGovernor(unittest.TestCase):
         self.assertIsNone(miss)
         self.assertEqual(cache.misses, 1)
 
+    def test_decompiler_cache_lru_eviction(self):
+        """Verifies that bounded cache evicts least-recently-used entries when exceeding maxsize."""
+        from superghidra.core.resource_governor import InMemoryDecompilerCache
+        cache = InMemoryDecompilerCache(maxsize=3)
+        cache.put(0x100, "func1")
+        cache.put(0x200, "func2")
+        cache.put(0x300, "func3")
+        self.assertTrue(cache.contains(0x100))
+
+        # Access 0x100 so 0x200 becomes the oldest
+        _ = cache.get(0x100)
+
+        # Insert 4th item, 0x200 should be evicted
+        cache.put(0x400, "func4")
+        self.assertFalse(cache.contains(0x200))
+        self.assertTrue(cache.contains(0x100))
+        self.assertTrue(cache.contains(0x300))
+        self.assertTrue(cache.contains(0x400))
+
     def test_telemetry_driven_auto_mode(self):
         gov = TelemetryResourceGovernor(logical_cores=8)
         gov.set_mode(ResourceMode.AUTO)

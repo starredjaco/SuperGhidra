@@ -474,6 +474,42 @@ class TestMLIRGotoFreeRestructurer(unittest.TestCase):
         self.assertIn("return 0xc8;", clean_c)
         self.assertNotIn("goto", clean_c)
 
+    def test_cyclic_loop_backedge_emits_marker_without_silent_omission(self):
+        """Verifies that cyclic control-flow back-edges emit LoopBackEdgeRegion markers."""
+        counter = Varnode(AddressSpace.REGISTER, 0x00, 8, symbol="counter")
+        one = Varnode(AddressSpace.CONST, 1, 8)
+        limit = Varnode(AddressSpace.CONST, 10, 8)
+        cond_vn = Varnode(AddressSpace.UNIQUE, 0x10, 1)
+
+        # Block 1 (Header): increment counter and branch back if counter < 10
+        b1_ops = [
+            PCodeOp(1, PCodeOpCode.INT_ADD, counter, [counter, one], 0x1000),
+            PCodeOp(2, PCodeOpCode.INT_LESS, cond_vn, [counter, limit], 0x1004),
+            PCodeOp(3, PCodeOpCode.CBRANCH, None, [Varnode(AddressSpace.CONST, 1, 8), cond_vn], 0x1008),
+        ]
+        # Block 2 (Exit): return counter
+        b2_ops = [
+            PCodeOp(4, PCodeOpCode.RETURN, None, [counter], 0x1010),
+        ]
+
+        func = PCodeFunction(
+            name="loop_func",
+            entry_rva=0x1000,
+            params=[counter],
+            blocks={
+                1: PCodeBasicBlock(1, 0x1000, b1_ops, succs=[1, 2], preds=[1]),
+                2: PCodeBasicBlock(2, 0x1010, b2_ops, succs=[], preds=[1]),
+            },
+        )
+
+        restructurer = MLIRGotoFreeRestructurer()
+        mlir_ir, clean_c = restructurer.restructure_function(func)
+
+        # Invariant checks: explicit back-edge marker emitted; no gotos; no silent omission
+        self.assertIn("/* loop back-edge to bb1 */", clean_c)
+        self.assertIn("// loop back-edge to ^bb1", mlir_ir)
+        self.assertNotIn("goto", clean_c)
+
     def test_pass_manager_restructure_goto_free(self):
         x = Varnode(AddressSpace.REGISTER, 0x00, 8, symbol="x")
         func = PCodeFunction(

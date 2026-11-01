@@ -656,8 +656,8 @@ def generate_synthetic_stream(size_bytes: int = 20 * 1024 * 1024, seed: int = 42
 
 def benchmark_scanner(size_mb: float = 20.0, iterations: int = 5) -> Dict[str, Any]:
     """
-    Benchmarks ARM64 pattern scanning over synthetic 20 MB instruction blocks.
-    Verifies GPU parallel sweep time meets target (< 5 ms).
+    Benchmarks ARM64 pattern scanning compute shader dispatch time over pre-loaded VRAM buffers.
+    Measures isolated GPU kernel dispatch latency (excluding host-to-device buffer staging).
     """
     size_bytes = int(size_mb * 1024 * 1024)
     data = generate_synthetic_stream(size_bytes)
