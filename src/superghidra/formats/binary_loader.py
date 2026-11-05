@@ -136,6 +136,9 @@ class BinaryImage:
         for sec in self.sections:
             if sec.file_size and sec.file_offset <= offset < sec.file_offset + sec.file_size:
                 return sec.vaddr + (offset - sec.file_offset)
+        for seg in self.segments:
+            if seg.file_size and seg.file_offset <= offset < seg.file_offset + seg.file_size:
+                return seg.vaddr + (offset - seg.file_offset)
         return None
 
     def rva_to_va(self, rva: int) -> int:

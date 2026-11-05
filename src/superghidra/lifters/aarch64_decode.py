@@ -52,6 +52,7 @@ class Aarch64Category(str, enum.Enum):
     MEM_LOAD = "mem_load"
     MEM_STORE = "mem_store"
     ALU_IMM = "alu_imm"
+    ALU_REG = "alu_reg"
     PROLOGUE = "prologue"
     EPILOGUE = "epilogue"
     SYSTEM = "system"
@@ -96,6 +97,36 @@ class Aarch64Insn:
 def _sign_extend(val: int, bits: int) -> int:
     sign_bit = 1 << (bits - 1)
     return (val & (sign_bit - 1)) - (val & sign_bit)
+
+
+def decode_bitmask_immediate(sf: int, n: int, imms: int, immr: int) -> int | None:
+    len_bits = 64 if sf else 32
+    if sf == 0 and n != 0:
+        return None
+    if n == 1:
+        size = 64
+    else:
+        leading_ones = 0
+        for bit in range(5, -1, -1):
+            if (imms >> bit) & 1:
+                leading_ones += 1
+            else:
+                break
+        if leading_ones >= 6:
+            return None
+        size = 32 >> leading_ones
+        if size > len_bits:
+            return None
+    levels = size - 1
+    s = imms & levels
+    r = immr & levels
+    pattern = (1 << (s + 1)) - 1
+    r = r % size
+    pattern = ((pattern >> r) | (pattern << (size - r))) & ((1 << size) - 1)
+    val = 0
+    for i in range(0, len_bits, size):
+        val |= pattern << i
+    return val
 
 
 def decode_aarch64(word: int, rva: int = 0) -> Aarch64Insn:
@@ -322,6 +353,171 @@ def decode_aarch64(word: int, rva: int = 0) -> Aarch64Insn:
 
         ops = f"{rd_str}, {rn_str}, #{hex(imm12)}" if mnem != "cmp" else f"{rn_str}, #{hex(imm12)}"
         return Aarch64Insn(rva, w, category, mnem, ops, immediate=val)
+
+    # 13. Logical (immediate): AND, ORR, EOR, ANDS, TST
+    # Form: [sf:1][opc:2][100100][N:1][immr:6][imms:6][Rn:5][Rd:5]
+    if (w & 0x1F800000) == 0x12000000:
+        sf = bool(w & 0x80000000)
+        opc = (w >> 29) & 3
+        n_bit = (w >> 22) & 1
+        immr = (w >> 16) & 0x3F
+        imms = (w >> 10) & 0x3F
+        rn = (w >> 5) & 0x1F
+        rd = w & 0x1F
+        imm_val = decode_bitmask_immediate(1 if sf else 0, n_bit, imms, immr)
+        if imm_val is not None:
+            rn_str = f"x{rn}" if sf else f"w{rn}"
+            rd_str = (f"x{rd}" if sf else f"w{rd}") if rd != 31 else ("xzr" if sf else "wzr")
+            imm_str = hex(imm_val) if imm_val > 9 else str(imm_val)
+            if opc == 0:
+                mnem = "and"
+                ops = f"{rd_str}, {rn_str}, #{imm_str}"
+            elif opc == 1:
+                mnem = "orr"
+                ops = f"{rd_str}, {rn_str}, #{imm_str}"
+            elif opc == 2:
+                mnem = "eor"
+                ops = f"{rd_str}, {rn_str}, #{imm_str}"
+            else:
+                if rd == 31:
+                    mnem = "tst"
+                    ops = f"{rn_str}, #{imm_str}"
+                else:
+                    mnem = "ands"
+                    ops = f"{rd_str}, {rn_str}, #{imm_str}"
+            return Aarch64Insn(rva, w, Aarch64Category.ALU_IMM, mnem, ops, immediate=imm_val)
+
+    # 14. Add/Subtract (shifted register)
+    # Form: [sf:1][op:1][S:1][01011][shift:2][0][Rm:5][imm6:6][Rn:5][Rd:5]
+    if (w & 0x1F200000) == 0x0B000000:
+        sf = bool(w & 0x80000000)
+        op = (w >> 30) & 1
+        s_bit = (w >> 29) & 1
+        shift_type = (w >> 22) & 3
+        shift_imm = (w >> 10) & 0x3F
+        rm = (w >> 16) & 0x1F
+        rn = (w >> 5) & 0x1F
+        rd = w & 0x1F
+        rm_str = f"x{rm}" if sf else f"w{rm}"
+        rn_str = f"x{rn}" if sf else f"w{rn}"
+        rd_str = (f"x{rd}" if sf else f"w{rd}") if rd != 31 else ("xzr" if sf else "wzr")
+        shift_names = ("lsl", "lsr", "asr", "ror")
+        sh_str = f", {shift_names[shift_type]} #{shift_imm}" if shift_imm else ""
+        if op == 0:
+            if s_bit == 0:
+                mnem = "add"
+                ops = f"{rd_str}, {rn_str}, {rm_str}{sh_str}"
+            else:
+                if rd == 31:
+                    mnem = "cmn"
+                    ops = f"{rn_str}, {rm_str}{sh_str}"
+                else:
+                    mnem = "adds"
+                    ops = f"{rd_str}, {rn_str}, {rm_str}{sh_str}"
+        else:
+            if s_bit == 0:
+                if rn == 31 and not shift_imm:
+                    mnem = "neg"
+                    ops = f"{rd_str}, {rm_str}"
+                else:
+                    mnem = "sub"
+                    ops = f"{rd_str}, {rn_str}, {rm_str}{sh_str}"
+            else:
+                if rd == 31:
+                    mnem = "cmp"
+                    ops = f"{rn_str}, {rm_str}{sh_str}"
+                else:
+                    mnem = "subs"
+                    ops = f"{rd_str}, {rn_str}, {rm_str}{sh_str}"
+        return Aarch64Insn(rva, w, Aarch64Category.ALU_REG, mnem, ops)
+
+    # 14. Logical (shifted register): AND, BIC, ORR, ORN, EOR, EON, ANDS, BICS
+    if (w & 0x1F000000) == 0x0A000000:
+        sf = bool(w & 0x80000000)
+        opc = (w >> 29) & 3
+        n_bit = (w >> 21) & 1
+        shift_type = (w >> 22) & 3
+        shift_imm = (w >> 10) & 0x3F
+        rm = (w >> 16) & 0x1F
+        rn = (w >> 5) & 0x1F
+        rd = w & 0x1F
+        rm_str = f"x{rm}" if sf else f"w{rm}"
+        rn_str = (f"x{rn}" if sf else f"w{rn}") if rn != 31 else ("xzr" if sf else "wzr")
+        rd_str = (f"x{rd}" if sf else f"w{rd}") if rd != 31 else ("xzr" if sf else "wzr")
+        shift_names = ("lsl", "lsr", "asr", "ror")
+        sh_str = f", {shift_names[shift_type]} #{shift_imm}" if shift_imm else ""
+        if opc == 0:
+            mnem = "bic" if n_bit else "and"
+        elif opc == 1:
+            if not n_bit and rn == 31 and not shift_imm:
+                mnem = "mov"
+                return Aarch64Insn(rva, w, Aarch64Category.ALU_REG, "mov", f"{rd_str}, {rm_str}")
+            mnem = "orn" if n_bit else "orr"
+        elif opc == 2:
+            mnem = "eon" if n_bit else "eor"
+        else:
+            if rd == 31:
+                mnem = "tst"
+                return Aarch64Insn(rva, w, Aarch64Category.ALU_REG, "tst", f"{rn_str}, {rm_str}{sh_str}")
+            mnem = "bics" if n_bit else "ands"
+        return Aarch64Insn(rva, w, Aarch64Category.ALU_REG, mnem, f"{rd_str}, {rn_str}, {rm_str}{sh_str}")
+
+    # 15. Conditional Select: CSEL, CSINC, CSINV, CSNEG
+    if (w & 0x1FE00000) == 0x1A800000:
+        sf = bool(w & 0x80000000)
+        op = (w >> 30) & 1
+        o2 = (w >> 10) & 1
+        cond_idx = (w >> 12) & 0xF
+        cond = AARCH64_COND_NAMES[cond_idx]
+        rm = (w >> 16) & 0x1F
+        rn = (w >> 5) & 0x1F
+        rd = w & 0x1F
+        rm_str = f"x{rm}" if sf else f"w{rm}"
+        rn_str = f"x{rn}" if sf else f"w{rn}"
+        rd_str = f"x{rd}" if sf else f"w{rd}"
+        if op == 0 and o2 == 0:
+            mnem = "csel"
+        elif op == 0 and o2 == 1:
+            if rm == 31 and rn == 31:
+                inv_cond = AARCH64_COND_NAMES[cond_idx ^ 1]
+                return Aarch64Insn(rva, w, Aarch64Category.ALU_REG, "cset", f"{rd_str}, {inv_cond}")
+            mnem = "csinc"
+        elif op == 1 and o2 == 0:
+            mnem = "csinv"
+        else:
+            mnem = "csneg"
+        return Aarch64Insn(rva, w, Aarch64Category.ALU_REG, mnem, f"{rd_str}, {rn_str}, {rm_str}, {cond}")
+
+    # 16. Bitfield: SBFM, BFM, UBFM
+    if (w & 0x1F800000) in (0x13000000, 0x33000000, 0x53000000):
+        sf = bool(w & 0x80000000)
+        opc = (w >> 29) & 3
+        immr = (w >> 16) & 0x3F
+        imms = (w >> 10) & 0x3F
+        rn = (w >> 5) & 0x1F
+        rd = w & 0x1F
+        rn_str = f"x{rn}" if sf else f"w{rn}"
+        rd_str = f"x{rd}" if sf else f"w{rd}"
+        max_b = 63 if sf else 31
+        if opc == 2:  # UBFM
+            if imms != max_b and immr == imms + 1:
+                mnem = "lsl"
+                shift = max_b + 1 - immr
+                ops = f"{rd_str}, {rn_str}, #{shift}"
+            elif imms == max_b:
+                mnem = "lsr"
+                ops = f"{rd_str}, {rn_str}, #{immr}"
+            elif imms >= immr:
+                mnem = "ubfx"
+                width = imms - immr + 1
+                ops = f"{rd_str}, {rn_str}, #{immr}, #{width}"
+            else:
+                mnem = "ubfm"
+                ops = f"{rd_str}, {rn_str}, #{immr}, #{imms}"
+        else:
+            mnem = "sbfm" if opc == 0 else "bfm"
+            ops = f"{rd_str}, {rn_str}, #{immr}, #{imms}"
+        return Aarch64Insn(rva, w, Aarch64Category.ALU_REG, mnem, ops)
 
     return Aarch64Insn(rva, w, Aarch64Category.OTHER, "unknown", f"0x{w:08x}")
 

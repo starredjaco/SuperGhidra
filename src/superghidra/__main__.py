@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import struct
 import sys
 from pathlib import Path
 from typing import Any, Tuple
@@ -199,7 +200,7 @@ def create_parser() -> argparse.ArgumentParser:
     concolic_trace_parser.add_argument("binary", type=Path, help="Path to binary")
     concolic_trace_parser.add_argument("--entry", required=True, type=lambda x: int(x, 0), help="Entry function RVA")
     concolic_trace_parser.add_argument("--addr", required=True, type=lambda x: int(x, 0), help="Object address")
-    concolic_trace_parser.add_argument("--id", dest="dump_id", default="default", help="Dump identifier")
+    concolic_trace_parser.add_argument("--id", dest="dump_id", default=None, help="Dump identifier")
     concolic_trace_parser.add_argument("--prng", nargs="+", type=lambda x: int(x, 0), default=[], help="PRNG function RVAs")
 
     # Subcommand: decompile-all
@@ -829,13 +830,14 @@ def cmd_elf_vtable(args: argparse.Namespace) -> int:
 
 def cmd_scan_insns(args: argparse.Namespace) -> int:
     from superghidra.acceleration.scan_arm64_insns import scan_arm64_insns
+    from superghidra.formats.binary_loader import load_binary
     if not args.binary.is_file():
         print(f"Error: binary file not found: {args.binary}", file=sys.stderr)
         return 1
 
-    data = args.binary.read_bytes()
+    img = load_binary(args.binary)
     matches = scan_arm64_insns(
-        data,
+        img.data,
         mem_offset=args.offset,
         access_type=args.access_type,
         immediate=args.immediate,
@@ -843,7 +845,10 @@ def cmd_scan_insns(args: argparse.Namespace) -> int:
     )
     print(f"Found {len(matches)} matching instructions:")
     for m in matches[:50]:
-        print(f"  0x{m.rva:08x}: {m.mnemonic:<8} {m.operands}")
+        va = img.offset_to_va(m.rva) if img else None
+        if va is None:
+            va = m.rva
+        print(f"  0x{va:08x}: {m.mnemonic:<8} {m.operands}")
     if len(matches) > 50:
         print(f"  ... and {len(matches) - 50} more matches.")
     return 0
@@ -871,27 +876,67 @@ def cmd_batch(args: argparse.Namespace) -> int:
 
 
 def cmd_resolve_xref(args: argparse.Namespace) -> int:
+    from superghidra.formats.binary_loader import load_binary
     from superghidra.lifters.aarch64_decode import resolve_arm64_xref_at
     if not args.binary.is_file():
         print(f"Error: binary file not found: {args.binary}", file=sys.stderr)
         return 1
-    data = args.binary.read_bytes()
-    res = resolve_arm64_xref_at(data, text_base_rva=0, insn_rva=args.address, lookahead_insns=args.lookahead)
+    img = load_binary(args.binary)
+    off = img.va_to_offset(args.address)
+    if off is None:
+        if 0 <= args.address < len(img.data):
+            off = args.address
+            text_base_rva = img.offset_to_va(off) or args.address
+            insn_rva = text_base_rva
+        else:
+            print(f"Error: address 0x{args.address:x} cannot be mapped", file=sys.stderr)
+            return 1
+    else:
+        text_base_rva = args.address
+        insn_rva = args.address
+
+    res = resolve_arm64_xref_at(
+        img.data[off:],
+        text_base_rva=text_base_rva,
+        insn_rva=insn_rva,
+        lookahead_insns=args.lookahead,
+    )
     print(json.dumps(res, indent=2))
     return 0
 
 
 def cmd_disasm_batch(args: argparse.Namespace) -> int:
-    from superghidra.lifters.aarch64_decode import disassemble_batch
+    from superghidra.formats.binary_loader import load_binary
+    from superghidra.lifters.aarch64_decode import decode_aarch64, disasm_insn_fast, disassemble_batch
     if args.words:
         res = disassemble_batch(raw_words=args.words)
         print(json.dumps(res, indent=2))
         return 0
     if args.binary and args.binary.is_file():
-        data = args.binary.read_bytes()
-        res = disassemble_batch(data, text_base_rva=0, addresses=args.rvas)
-        print(json.dumps(res, indent=2))
-        return 0
+        img = load_binary(args.binary)
+        if args.rvas:
+            results = []
+            for va in args.rvas:
+                off = img.va_to_offset(va)
+                if off is None and 0 <= va < len(img.data):
+                    off = va
+                if off is not None and 0 <= off and off + 4 <= len(img.data):
+                    w = struct.unpack_from("<I", img.data, off)[0]
+                    insn = decode_aarch64(w, va)
+                    dis = disasm_insn_fast(w, va)
+                    results.append({
+                        "rva": hex(va),
+                        "word_hex": f"0x{w:08x}",
+                        "mnemonic": insn.mnemonic,
+                        "operands": insn.operands,
+                        "disasm": dis,
+                    })
+            print(json.dumps(results, indent=2))
+            return 0
+        else:
+            res = disassemble_batch(img.data, text_base_rva=0, addresses=args.rvas)
+            print(json.dumps(res, indent=2))
+            return 0
     print("Error: either --words or --binary with --rvas must be specified", file=sys.stderr)
     return 1
 
@@ -914,19 +959,30 @@ def cmd_dump_inspect(args: argparse.Namespace) -> int:
 
 
 def cmd_concolic_trace(args: argparse.Namespace) -> int:
+    from superghidra.formats.binary_loader import load_binary
     from superghidra.integrations.dump_overlay import LiveDumpOverlayManager
     from superghidra.integrations.trace_slicer import evaluate_function_on_dump
     if not args.binary.is_file():
         print(f"Error: binary file not found: {args.binary}", file=sys.stderr)
         return 1
     mgr = LiveDumpOverlayManager()
-    data = args.binary.read_bytes()
+    if args.dump_id is not None:
+        if args.dump_id not in mgr.dumps:
+            err = {"error": f"Dump '{args.dump_id}' not registered"}
+            print(json.dumps(err, indent=2))
+            return 1
+        dump_id = args.dump_id
+    else:
+        dump_id = "default"
+
+    img = load_binary(args.binary)
     res = evaluate_function_on_dump(
         dump_manager=mgr,
-        dump_id=args.dump_id or "default",
+        dump_id=dump_id,
         entry_rva=args.entry,
         object_addr=args.addr,
-        text_bytes=data,
+        text_bytes=img.data,
+        va_to_offset=img.va_to_offset,
         prng_rvas=args.prng,
     )
     print(json.dumps(res, indent=2))

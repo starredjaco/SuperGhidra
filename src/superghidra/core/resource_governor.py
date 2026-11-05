@@ -32,12 +32,12 @@ Implements Section 8 of GHIDRA_REFORMATION_ARCHITECTURAL_SPEC.md:
 
 from __future__ import annotations
 
-from collections import OrderedDict
 import dataclasses
 import enum
 import logging
 import os
 import time
+from collections import OrderedDict
 from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger("resource_governor")

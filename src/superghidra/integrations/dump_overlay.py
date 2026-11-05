@@ -7,10 +7,15 @@ enabling virtual method devirtualization and typed struct field inspection.
 
 from __future__ import annotations
 
+import json
 import mmap
+import os
 import struct
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+DEFAULT_DUMP_REGISTRY_PATH = Path.home() / ".superghidra" / "dumps.json"
 
 
 @dataclass
@@ -25,15 +30,59 @@ class DumpSegment:
 class LiveDumpOverlayManager:
     """Bridges runtime memory dumps with static ELF RVAs and vtables."""
 
-    def __init__(self, vtable_resolver: Any = None):
+    def __init__(self, vtable_resolver: Any = None, persistence_path: Path | str | None = None):
         self.vtable_resolver = vtable_resolver
+        self.persistence_path = Path(persistence_path) if persistence_path is not None else DEFAULT_DUMP_REGISTRY_PATH
         self.dumps: Dict[str, dict] = {}  # dump_id -> {"module_base": int, "segments": list[DumpSegment]}
+        self.load_registry()
+
+    def save_registry(self) -> None:
+        """Persists registered dump metadata across CLI invocations."""
+        if not self.persistence_path:
+            return
+        payload = {}
+        for dump_id, info in self.dumps.items():
+            seg_list = []
+            for seg in info["segments"]:
+                if seg.file_path and os.path.exists(seg.file_path):
+                    seg_list.append([seg.start_va, seg.file_path])
+            if seg_list:
+                payload[dump_id] = {
+                    "module_base": info["module_base"],
+                    "segments": seg_list,
+                }
+        try:
+            self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
+            self.persistence_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def load_registry(self) -> None:
+        """Loads previously registered dumps from disk."""
+        if not self.persistence_path or not self.persistence_path.is_file():
+            return
+        try:
+            payload = json.loads(self.persistence_path.read_text(encoding="utf-8"))
+            for dump_id, info in payload.items():
+                if dump_id in self.dumps:
+                    continue
+                valid_segs = []
+                for item in info.get("segments", []):
+                    va = item[0]
+                    p = item[1]
+                    if os.path.exists(p):
+                        valid_segs.append((va, p))
+                if valid_segs:
+                    self.register_dump(dump_id, info.get("module_base", 0), valid_segs, persist=False)
+        except Exception:
+            pass
 
     def register_dump(
         self,
         dump_id: str,
         module_base: int,
         segments: List[Tuple[int, str]] | List[Tuple[int, bytes]],
+        persist: bool = True,
     ) -> dict:
         """Registers a memory dump snapshot composed of one or more address segments."""
         loaded_segs: List[DumpSegment] = []
@@ -64,6 +113,8 @@ class LiveDumpOverlayManager:
                 )
         loaded_segs.sort(key=lambda s: s.start_va)
         self.dumps[dump_id] = {"module_base": module_base, "segments": loaded_segs}
+        if persist:
+            self.save_registry()
         return {
             "dump_id": dump_id,
             "module_base": hex(module_base),

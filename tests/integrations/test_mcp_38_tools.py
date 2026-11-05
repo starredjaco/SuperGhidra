@@ -101,6 +101,12 @@ EXPECTED_EXTRA_TOOLS = [
     "apple_dispatch",
     "il2cpp_recover",
     "crate_audit",
+    "vtable_lookup",
+    "insn_scan",
+    "resolve_xref",
+    "disasm_batch",
+    "dump_register",
+    "concolic_trace",
 ]
 
 

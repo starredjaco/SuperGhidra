@@ -8,7 +8,7 @@ consumed PRNG draws vs. which instances exited early on branch guards.
 from __future__ import annotations
 
 import struct
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from superghidra.integrations.dump_overlay import LiveDumpOverlayManager
 from superghidra.lifters.aarch64_decode import decode_aarch64
@@ -21,6 +21,7 @@ def evaluate_function_on_dump(
     object_addr: int | str,
     text_bytes: bytes,
     text_base_rva: int = 0,
+    va_to_offset: Any = None,
     prng_rvas: List[int] | None = None,
     max_steps: int = 2000,
 ) -> dict:
@@ -40,9 +41,15 @@ def evaluate_function_on_dump(
 
     while steps < max_steps:
         steps += 1
-        rel = pc - text_base_rva
-        if rel < 0 or rel + 4 > len(text_bytes):
-            break
+        if va_to_offset is not None:
+            off = va_to_offset(pc)
+            if off is None or off + 4 > len(text_bytes):
+                break
+            rel = off
+        else:
+            rel = pc - text_base_rva
+            if rel < 0 or rel + 4 > len(text_bytes):
+                break
 
         w = struct.unpack_from("<I", text_bytes, rel)[0]
         insn = decode_aarch64(w, pc)
@@ -114,6 +121,16 @@ def evaluate_function_on_dump(
                 if taken and insn.target_rva is not None:
                     pc = insn.target_rva
                     continue
+            elif insn.mnemonic.startswith("b.") or insn.mnemonic in ("tbz", "tbnz"):
+                if not early_exit_branch and not prng_calls:
+                    early_exit_branch = {
+                        "branch_rva": hex(pc),
+                        "mnemonic": insn.mnemonic,
+                        "branch_taken": False,
+                        "target_rva": hex(insn.target_rva) if insn.target_rva else None,
+                    }
+                # Default branch not taken in static heuristic trace without condition flags
+                pass
 
         # Advance PC sequentially if not branched
         pc += 4

@@ -89,6 +89,27 @@ class Elf64AArch64VTableResolver:
     ):
         self.elf = elf_bytes
         self.text_start, self.text_end = text_range
+
+        # Parse dynsym symbol values if section headers are present
+        dynsym: Dict[int, int] = {}
+        if len(elf_bytes) >= 64 and elf_bytes[:4] == b"\x7fELF":
+            e_shoff = struct.unpack_from("<Q", elf_bytes, 40)[0]
+            e_shentsize = struct.unpack_from("<H", elf_bytes, 58)[0]
+            e_shnum = struct.unpack_from("<H", elf_bytes, 60)[0]
+            if e_shoff > 0 and e_shnum > 0:
+                for i in range(e_shnum):
+                    s_off = e_shoff + i * e_shentsize
+                    if s_off + 64 <= len(elf_bytes):
+                        sh_name, sh_type, sh_flags, sh_addr, sh_offset, sh_size = struct.unpack_from(
+                            "<IIQQQQ", elf_bytes, s_off
+                        )
+                        if sh_type == 11:  # SHT_DYNSYM
+                            sym_cnt = sh_size // 24
+                            for s_i in range(sym_cnt):
+                                sym_p = sh_offset + s_i * 24
+                                if sym_p + 24 <= len(elf_bytes):
+                                    dynsym[s_i] = struct.unpack_from("<Q", elf_bytes, sym_p + 8)[0]
+
         if rela_dyn_size > 0 and rela_dyn_offset + rela_dyn_size <= len(elf_bytes):
             count = rela_dyn_size // 24
             raw_rela = np.frombuffer(
@@ -98,11 +119,19 @@ class Elf64AArch64VTableResolver:
                 offset=rela_dyn_offset,
             )
             r_types = raw_rela["r_info"] & 0xFFFFFFFF
-            mask = (r_types == R_AARCH64_RELATIVE) | (r_types == R_AARCH64_ABS64)
+            mask = (r_types == R_AARCH64_RELATIVE) | (r_types == R_AARCH64_ABS64) | (r_types == R_AARCH64_GLOB_DAT)
             filtered = raw_rela[mask]
             order = np.argsort(filtered["r_offset"])
             self.offsets = filtered["r_offset"][order]
-            self.addends = filtered["r_addend"][order]
+            resolved_targets = np.copy(filtered["r_addend"][order])
+            filt_types = (filtered["r_info"][order]) & 0xFFFFFFFF
+            filt_syms = (filtered["r_info"][order]) >> 32
+            for idx, r_type in enumerate(filt_types):
+                if r_type in (R_AARCH64_ABS64, R_AARCH64_GLOB_DAT):
+                    s_idx = int(filt_syms[idx])
+                    if s_idx in dynsym:
+                        resolved_targets[idx] = dynsym[s_idx] + resolved_targets[idx]
+            self.addends = resolved_targets
         else:
             self.offsets = np.empty(0, dtype="<u8")
             self.addends = np.empty(0, dtype="<i8")
@@ -186,7 +215,8 @@ class ElfVTableRecoveryEngine:
     def __init__(self, data: bytes, base_rva: int = 0):
         self.data = data
         self.base_rva = base_rva
-        self.relocs: Dict[int, int] = {}  # r_offset -> r_addend
+        self.relocs: Dict[int, int] = {}  # r_offset -> target address
+        self.dynsym: Dict[int, int] = {}  # sym_idx -> st_value
         self.vtables: Dict[int, RecoveredVTable] = {}  # vtable_rva -> RecoveredVTable
         self.text_ranges: List[Tuple[int, int]] = []
         self.ro_ranges: List[Tuple[int, int]] = []
@@ -259,6 +289,7 @@ class ElfVTableRecoveryEngine:
                 )
                 shstrtab = self.data[strtab_offset : strtab_offset + strtab_sz]
 
+                rela_sections: List[Tuple[int, int, int]] = []
                 for i in range(e_shnum):
                     s_off = e_shoff + i * e_shentsize
                     if s_off + 64 > len(self.data):
@@ -283,8 +314,18 @@ class ElfVTableRecoveryEngine:
                         else ""
                     )
 
-                    if sec_name in (".rela.dyn", ".rela.plt") or sh_type == 4:  # SHT_RELA
-                        self._parse_rela_section(sh_offset, sh_size, sh_entsize or 24)
+                    if sh_type == 11 or sec_name == ".dynsym":  # SHT_DYNSYM
+                        sym_ent = sh_entsize or 24
+                        sym_cnt = sh_size // sym_ent
+                        for s_i in range(sym_cnt):
+                            sym_p = sh_offset + s_i * sym_ent
+                            if sym_p + 24 <= len(self.data):
+                                self.dynsym[s_i] = struct.unpack_from("<Q", self.data, sym_p + 8)[0]
+                    elif sec_name in (".rela.dyn", ".rela.plt") or sh_type == 4:  # SHT_RELA
+                        rela_sections.append((sh_offset, sh_size, sh_entsize or 24))
+
+                for r_off, r_sz, r_ent in rela_sections:
+                    self._parse_rela_section(r_off, r_sz, r_ent)
 
         # If relocations not found via section headers, parse from PT_DYNAMIC
         if not self.relocs and rela_offset > 0 and rela_size > 0:
@@ -300,8 +341,12 @@ class ElfVTableRecoveryEngine:
         for cur in range(offset, end - entsize + 1, entsize):
             r_offset, r_info, r_addend = struct.unpack_from("<QQq", self.data, cur)
             rel_type = r_info & 0xFFFFFFFF
-            if rel_type in (R_AARCH64_RELATIVE, R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT):
+            sym_idx = r_info >> 32
+            if rel_type == R_AARCH64_RELATIVE:
                 self.relocs[r_offset] = r_addend
+            elif rel_type in (R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT):
+                sym_val = self.dynsym.get(sym_idx, 0)
+                self.relocs[r_offset] = sym_val + r_addend
 
     def _scan_raw_rela_fallback(self) -> None:
         """Heuristic sweep for contiguous Elf64_Rela entries when section headers are absent."""

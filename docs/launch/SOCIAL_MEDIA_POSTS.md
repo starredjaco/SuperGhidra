@@ -57,7 +57,7 @@ Feedback welcome on the overlay conflict model and P-code lifter coverage!
 
 ### Post A: `r/ReverseEngineering` & `r/ghidra`
 
-**Title:** SuperGhidra: Warm lock-free Ghidra daemon, non-destructive JSON write overlays, standalone MSVC/MFC & Rust/Go recovery, and Z3-proven jump tables
+**Title:** SuperGhidra: Warm lock-free Ghidra daemon, non-destructive JSON write overlays, standalone MSVC/MFC & Rust/Go recovery, and jump tables checked against an independent decoder
 
 **Body:**
 ```markdown

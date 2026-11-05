@@ -211,6 +211,9 @@ class AArch64InteriorResolver:
                         cur -= 4
                 candidate_entry = self.base + cur
                 break
+        else:
+            if min_rel == 0:
+                candidate_entry = self.base
 
         bb_start, bb_end = self._find_enclosing_basic_block(rva, candidate_entry)
         return ResolvedFunctionTarget(
