@@ -12,6 +12,11 @@
 | [`neural_decompiler_pipeline.py`](neural_decompiler_pipeline.py) | `NeuralDecompilerPipeline`, `LLMDecompilerClient`, `SkeletonExtractor`, `DecompiledSkeleton`, `NeuralPrediction`, `VerifiedNeuralCommit` | Two-phase Skeleton-to-Skin neural decompiler normalizing raw C skeletons, querying OpenAI/vLLM/Ollama/Gemini HTTP endpoints, and gating commits via `EvidenceLedger`. |
 | [`d_lift_verifier.py`](d_lift_verifier.py) | `DLiftRewardEngine`, `InMemClangSyntaxGate`, `Z3SemanticEquivalenceGate`, `ReadabilityGate`, `GRPORewardManager`, `DScoreResult` | D-LiFT + Z3 self-verifying neural decompiler backend with 3-gate hierarchical reward (`max(R_syn) < min(R_sem) < min(R_read)`), constant-drift counterexamples, and GRPO advantage normalization. |
 | [`ghidra_gui_overlay_sync.py`](ghidra_gui_overlay_sync.py) | `OverlaySyncBridge`, `generate_ghidra_python_script`, `generate_ghidra_watcher_script`, `generate_diff_report`, `sync_to_script` | Synchronizes write-overlay mutations and `.ghidra-delta.jsonl` streams into one-shot or live `--watch` Ghidra GUI Python scripts with incremental delta calculation, `before`/`after` conflict checking, and atomic FlatProgramAPI transactions. |
+| [`dump_workspace.py`](dump_workspace.py) | `DumpWorkspace`, `DumpModule`, `InspectedHeapObject`, `ObjectDiffResult` | Memory dump workspace for ASLR normalization, vtable pointer inspection, and cross-dump heap diffing. |
+| [`dump_overlay.py`](dump_overlay.py) | `LiveDumpOverlayManager`, `DumpSegment` | Memory dump overlay manager linking runtime heap objects and vtables with static ELF RVAs. |
+| [`trace_slicer.py`](trace_slicer.py) | `evaluate_function_on_dump`, `trace_concolic_draws` | Dump-seeded concrete micro-stepper and PRNG call-site evaluator for active vs. dead draw isolation. |
+| [`concolic_trace_slicer.py`](concolic_trace_slicer.py) | `ConcolicPRNGCorrelator`, `PRNGDrawEvent`, `ReconciledPRNGTrace` | Short-window PRNG reconciliation (1–500 draws) with structured event ledgers. |
+| [`macro_prng_replay.py`](macro_prng_replay.py) | `precompute_prng_table`, `find_prng_heap_anchors`, `solve_draw_budget`, `native_tick_replay` | Macro PRNG precomputation tables (100K draws) and conservation draw-budget solver. |
 
 
 ## 2. Key Data Structures & Invariants

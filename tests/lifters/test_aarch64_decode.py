@@ -8,7 +8,9 @@ from superghidra.lifters.aarch64_decode import (
     Aarch64Category,
     decode_aarch64,
     disasm_range_fast,
+    disassemble_batch,
     resolve_adrp_pair,
+    resolve_arm64_xref_at,
     resolve_branch_target,
     scan_prologue_backward,
 )
@@ -105,3 +107,36 @@ def test_prologue_and_epilogue_sweep():
     assert len(lines) == 6
     assert "stp" in lines[0]
     assert "ret" in lines[5]
+
+
+def test_resolve_arm64_xref_at():
+    # Build buffer with:
+    # 0x1000: bl 0x1020 (0x94000008)
+    # 0x1004: adrp x8, #0x2000 (0x90000088)
+    # 0x1008: nop
+    # 0x100C: add x8, x8, #0x40 (0x91010108)
+    buf = bytearray()
+    buf += struct.pack("<I", 0x94000008)  # bl 0x1020
+    buf += struct.pack("<I", 0xB0000008)  # adrp x8, page 0x2000 (+1 page from 0x1000)
+    buf += struct.pack("<I", 0xD503201F)  # nop
+    buf += struct.pack("<I", 0x91010108)  # add x8, x8, #0x40
+
+    xref_bl = resolve_arm64_xref_at(bytes(buf), text_base_rva=0x1000, insn_rva=0x1000)
+    assert xref_bl["mnemonic"] == "bl"
+    assert xref_bl["target_rva"] == hex(0x1020)
+
+    xref_adrp = resolve_arm64_xref_at(bytes(buf), text_base_rva=0x1000, insn_rva=0x1004)
+    assert xref_adrp["mnemonic"] == "adrp"
+    assert len(xref_adrp["paired_consumers"]) == 1
+    assert xref_adrp["paired_consumers"][0]["type"] == "ADRP+ADD"
+    assert xref_adrp["paired_consumers"][0]["computed_rva"] == hex(0x2040)
+
+
+def test_disassemble_batch():
+    words = [0xA9BA7BFD, 0x39049268]
+    res = disassemble_batch(raw_words=words, text_base_rva=0x1000)
+    assert len(res) == 2
+    assert res[0]["rva"] == hex(0x1000)
+    assert "stp" in res[0]["mnemonic"]
+    assert res[1]["rva"] == hex(0x1004)
+    assert "strb" in res[1]["mnemonic"]

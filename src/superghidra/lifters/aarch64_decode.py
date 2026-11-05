@@ -30,9 +30,11 @@ __all__ = [
     "iter_decode_aarch64",
     "resolve_branch_target",
     "resolve_adrp_pair",
+    "resolve_arm64_xref_at",
     "scan_prologue_backward",
     "disasm_insn_fast",
     "disasm_range_fast",
+    "disassemble_batch",
 ]
 
 AARCH64_REG_NAMES = tuple(f"x{i}" for i in range(31)) + ("sp", "xzr")
@@ -73,6 +75,10 @@ class Aarch64Insn:
     @property
     def is_branch(self) -> bool:
         return self.category in (Aarch64Category.BRANCH, Aarch64Category.CALL)
+
+    @property
+    def is_call(self) -> bool:
+        return self.category == Aarch64Category.CALL
 
     @property
     def is_memory_access(self) -> bool:
@@ -434,3 +440,211 @@ def disasm_range_fast(data: bytes, start_rva: int, end_rva: int) -> List[str]:
         dis = disasm_insn_fast(w, off)
         lines.append(f"0x{off:08x}: {w:08x}  {dis}")
     return lines
+
+
+def resolve_arm64_xref_at(
+    text_bytes: bytes,
+    text_base_rva: int,
+    insn_rva: int,
+    vtable_resolver=None,
+    vaddr_to_file_offset=None,
+    lookahead_insns: int = 8,
+) -> dict:
+    """Resolves B, BL, B.cond, CBZ/CBNZ, TBZ/TBNZ, ADR, and ADRP + (ADD|LDR) pairs at insn_rva."""
+    rel = insn_rva - text_base_rva
+    if rel < 0 or rel + 4 > len(text_bytes):
+        return {"rva": hex(insn_rva), "error": "insn_rva out of text bounds"}
+
+    w = struct.unpack_from("<I", text_bytes, rel)[0]
+
+    # 1. Unconditional B / BL (imm26)
+    if (w & 0x7C000000) == 0x14000000:
+        is_bl = bool(w & 0x80000000)
+        imm26 = w & 0x03FFFFFF
+        if imm26 & (1 << 25):
+            imm26 -= (1 << 26)
+        target = insn_rva + (imm26 << 2)
+        return {"rva": hex(insn_rva), "mnemonic": "bl" if is_bl else "b", "target_rva": hex(target)}
+
+    # 2. Conditional B.cond (imm19)
+    if (w & 0xFF000010) == 0x54000000:
+        cond_idx = w & 0xF
+        cond_name = AARCH64_COND_NAMES[cond_idx] if cond_idx < len(AARCH64_COND_NAMES) else f"cond{cond_idx}"
+        imm19 = (w >> 5) & 0x7FFFF
+        if imm19 & (1 << 18):
+            imm19 -= (1 << 19)
+        target = insn_rva + (imm19 << 2)
+        return {"rva": hex(insn_rva), "mnemonic": f"b.{cond_name}", "target_rva": hex(target)}
+
+    # 3. CBZ / CBNZ (imm19)
+    if (w & 0x7E000000) == 0x34000000:
+        is_cbnz = bool(w & 0x01000000)
+        rt = w & 0x1F
+        imm19 = (w >> 5) & 0x7FFFF
+        if imm19 & (1 << 18):
+            imm19 -= (1 << 19)
+        target = insn_rva + (imm19 << 2)
+        return {
+            "rva": hex(insn_rva),
+            "mnemonic": "cbnz" if is_cbnz else "cbz",
+            "reg": f"x{rt}",
+            "target_rva": hex(target),
+        }
+
+    # 4. TBZ / TBNZ (imm14)
+    if (w & 0x7E000000) == 0x36000000:
+        is_tbnz = bool(w & 0x01000000)
+        rt = w & 0x1F
+        imm14 = (w >> 5) & 0x3FFF
+        if imm14 & (1 << 13):
+            imm14 -= (1 << 14)
+        target = insn_rva + (imm14 << 2)
+        return {
+            "rva": hex(insn_rva),
+            "mnemonic": "tbnz" if is_tbnz else "tbz",
+            "reg": f"x{rt}",
+            "target_rva": hex(target),
+        }
+
+    # 5. ADR (imm21)
+    if (w & 0x9F000000) == 0x10000000:
+        rd = w & 0x1F
+        immlo = (w >> 29) & 0x3
+        immhi = (w >> 5) & 0x7FFFF
+        imm21 = (immhi << 2) | immlo
+        if imm21 & (1 << 20):
+            imm21 -= (1 << 21)
+        target = insn_rva + imm21
+        return {"rva": hex(insn_rva), "mnemonic": "adr", "dest_reg": f"x{rd}", "target_rva": hex(target)}
+
+    # 6. ADRP Xd, #page (bit[31]=1, bits[28:24]=10000)
+    if (w & 0x9F000000) == 0x90000000:
+        rd = w & 0x1F
+        immlo = (w >> 29) & 0x3
+        immhi = (w >> 5) & 0x7FFFF
+        imm21 = (immhi << 2) | immlo
+        if imm21 & (1 << 20):
+            imm21 -= (1 << 21)
+        page_base = (insn_rva & ~0xFFF) + (imm21 << 12)
+
+        consumers = []
+        for step in range(1, lookahead_insns + 1):
+            cur_rel = rel + step * 4
+            if cur_rel + 4 > len(text_bytes):
+                break
+            cw = struct.unpack_from("<I", text_bytes, cur_rel)[0]
+            cur_rva = insn_rva + step * 4
+            rn = (cw >> 5) & 0x1F
+            crd = cw & 0x1F
+
+            # ADD Xd, Xn, #imm12
+            if rn == rd and (cw & 0xFF800000) == 0x91000000:
+                sh = (cw >> 22) & 0x1
+                imm12 = ((cw >> 10) & 0xFFF) << (12 if sh else 0)
+                resolved_addr = page_base + imm12
+                consumers.append({
+                    "consumer_rva": hex(cur_rva),
+                    "type": "ADRP+ADD",
+                    "dest_reg": f"x{crd}",
+                    "computed_rva": hex(resolved_addr),
+                })
+
+            # LDR Xt, [Xn, #imm12] (64-bit unsigned offset: 0xF9400000)
+            elif rn == rd and (cw & 0xFFC00000) == 0xF9400000:
+                imm12 = ((cw >> 10) & 0xFFF) << 3
+                ptr_addr = page_base + imm12
+                deref_target = None
+                deref_src = None
+                if vtable_resolver is not None:
+                    foff = vaddr_to_file_offset(ptr_addr) if vaddr_to_file_offset else None
+                    deref_target, deref_src = vtable_resolver.resolve_pointer_at(ptr_addr, foff)
+                consumers.append({
+                    "consumer_rva": hex(cur_rva),
+                    "type": "ADRP+LDR",
+                    "dest_reg": f"x{crd}",
+                    "pointer_slot_rva": hex(ptr_addr),
+                    "dereferenced_target_rva": hex(deref_target) if deref_target else None,
+                    "deref_source": deref_src,
+                })
+
+            # Stop tracking if base register rd is clobbered by an unrelated instruction
+            if crd == rd and not consumers:
+                break
+
+        return {
+            "rva": hex(insn_rva),
+            "mnemonic": "adrp",
+            "base_reg": f"x{rd}",
+            "page_base_rva": hex(page_base),
+            "paired_consumers": consumers,
+        }
+
+    return {"rva": hex(insn_rva), "word_hex": f"0x{w:08x}", "note": "Not a direct branch or ADRP instruction"}
+
+
+def disassemble_batch(
+    text_bytes: bytes | None = None,
+    text_base_rva: int = 0,
+    addresses: List[int] | None = None,
+    raw_words: List[int] | None = None,
+    count: int | None = None,
+) -> List[dict]:
+    """Batch disassembly of addresses, ranges, or raw instruction words in pure Python."""
+    results: List[dict] = []
+
+    if raw_words is not None:
+        for idx, w in enumerate(raw_words):
+            rva = text_base_rva + idx * 4
+            insn = decode_aarch64(w, rva)
+            dis = disasm_insn_fast(w, rva)
+            results.append({
+                "rva": hex(rva),
+                "word_hex": f"0x{w:08x}",
+                "mnemonic": insn.mnemonic,
+                "operands": insn.operands,
+                "disasm": dis,
+            })
+        return results
+
+    if text_bytes is None:
+        return results
+
+    if addresses is not None:
+        for addr in addresses:
+            rel = addr - text_base_rva
+            if 0 <= rel and rel + 4 <= len(text_bytes):
+                w = struct.unpack_from("<I", text_bytes, rel)[0]
+                insn = decode_aarch64(w, addr)
+                dis = disasm_insn_fast(w, addr)
+                results.append({
+                    "rva": hex(addr),
+                    "word_hex": f"0x{w:08x}",
+                    "mnemonic": insn.mnemonic,
+                    "operands": insn.operands,
+                    "disasm": dis,
+                })
+            else:
+                results.append({
+                    "rva": hex(addr),
+                    "error": "Address out of bounds",
+                })
+        return results
+
+    # Disassemble sequential count instructions from text_base_rva
+    n = count if count is not None else len(text_bytes) // 4
+    for i in range(min(n, len(text_bytes) // 4)):
+        off = i * 4
+        w = struct.unpack_from("<I", text_bytes, off)[0]
+        rva = text_base_rva + off
+        insn = decode_aarch64(w, rva)
+        dis = disasm_insn_fast(w, rva)
+        results.append({
+            "rva": hex(rva),
+            "word_hex": f"0x{w:08x}",
+            "mnemonic": insn.mnemonic,
+            "operands": insn.operands,
+            "disasm": dis,
+        })
+
+    return results
+

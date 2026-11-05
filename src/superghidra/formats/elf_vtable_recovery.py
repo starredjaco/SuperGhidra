@@ -3,11 +3,11 @@ elf_vtable_recovery.py - Stripped ELF AArch64 C++ Virtual Table & Relocation Rec
 
 Features:
   - Vectorized and streaming ingestion of ELF64 .rela.dyn / PT_DYNAMIC relocations.
-  - O(1) relocation query map: filters R_AARCH64_RELATIVE (0x403) addends.
+  - O(1) relocation query map: filters R_AARCH64_RELATIVE (0x403) and R_AARCH64_ABS64 (0x101) addends.
   - Stripped C++ vtable boundary detection in .data.rel.ro / .rodata.
   - Constructor ADRP + ADD analysis to associate class constructors with vtable RVAs.
   - Fast devirtualization lookup: vtable_lookup(vtable_rva, slot_offset) -> function target RVA.
-  - Synthetic C struct generation for Ghidra JSON write overlay integration.
+  - Itanium ABI vptr address point normalization and synthetic C struct generation.
 """
 
 from __future__ import annotations
@@ -17,11 +17,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import numpy as np
+
 from superghidra.lifters.aarch64_decode import (
     decode_aarch64,
     resolve_adrp_pair,
 )
 
+R_AARCH64_ABS64 = 0x101
 R_AARCH64_RELATIVE = 0x403
 R_AARCH64_GLOB_DAT = 0x401
 R_AARCH64_JUMP_SLOT = 0x402
@@ -31,6 +34,22 @@ DT_PLTGOT = 3
 DT_RELA = 7
 DT_RELASZ = 8
 DT_RELAENT = 9
+
+ELF64_RELA_DTYPE = np.dtype([
+    ("r_offset", "<u8"),
+    ("r_info", "<u8"),
+    ("r_addend", "<i8"),
+])
+
+
+@dataclass(frozen=True)
+class VTableSlotEntry:
+    slot_index: int
+    byte_offset: int          # Offset relative to vptr (e.g. +0x88)
+    slot_vaddr: int           # Address of the slot inside .data.rel.ro
+    target_rva: int           # Resolved function RVA from .rela.dyn r_addend or static qword
+    source: str               # "rela.dyn (R_AARCH64_RELATIVE)", "static_qword", or "dynsym"
+    prologue_preview: str = ""
 
 
 @dataclass
@@ -58,6 +77,109 @@ class RecoveredVTable:
         return None
 
 
+class Elf64AArch64VTableResolver:
+    """Fast .rela.dyn-aware Itanium ABI C++ vtable resolver for stripped AArch64 ELFs."""
+
+    def __init__(
+        self,
+        elf_bytes: bytes,
+        rela_dyn_offset: int,
+        rela_dyn_size: int,
+        text_range: Tuple[int, int],
+    ):
+        self.elf = elf_bytes
+        self.text_start, self.text_end = text_range
+        if rela_dyn_size > 0 and rela_dyn_offset + rela_dyn_size <= len(elf_bytes):
+            count = rela_dyn_size // 24
+            raw_rela = np.frombuffer(
+                elf_bytes,
+                dtype=ELF64_RELA_DTYPE,
+                count=count,
+                offset=rela_dyn_offset,
+            )
+            r_types = raw_rela["r_info"] & 0xFFFFFFFF
+            mask = (r_types == R_AARCH64_RELATIVE) | (r_types == R_AARCH64_ABS64)
+            filtered = raw_rela[mask]
+            order = np.argsort(filtered["r_offset"])
+            self.offsets = filtered["r_offset"][order]
+            self.addends = filtered["r_addend"][order]
+        else:
+            self.offsets = np.empty(0, dtype="<u8")
+            self.addends = np.empty(0, dtype="<i8")
+
+    def resolve_pointer_at(self, vaddr: int, file_offset: int | None = None) -> Tuple[int, str]:
+        if len(self.offsets) > 0:
+            idx = int(np.searchsorted(self.offsets, vaddr))
+            if idx < len(self.offsets) and self.offsets[idx] == vaddr:
+                return int(self.addends[idx]), "rela.dyn (R_AARCH64_RELATIVE)"
+        if file_offset is not None and 0 <= file_offset <= len(self.elf) - 8:
+            val = struct.unpack_from("<Q", self.elf, file_offset)[0]
+            if val != 0:
+                return val, "static_qword"
+        return 0, "unresolved"
+
+    def resolve_vtable(
+        self,
+        base_vaddr: int,
+        slot_offset: int | None = None,
+        max_slots: int = 64,
+        vaddr_to_file_offset=None,
+    ) -> dict:
+        first_target, _ = self.resolve_pointer_at(
+            base_vaddr, vaddr_to_file_offset(base_vaddr) if vaddr_to_file_offset else None
+        )
+        plus16_target, _ = self.resolve_pointer_at(
+            base_vaddr + 0x10, vaddr_to_file_offset(base_vaddr + 0x10) if vaddr_to_file_offset else None
+        )
+        if not (self.text_start <= first_target < self.text_end) and (self.text_start <= plus16_target < self.text_end):
+            vptr_vaddr = base_vaddr + 0x10
+            header_vaddr = base_vaddr
+        else:
+            vptr_vaddr = base_vaddr
+            header_vaddr = base_vaddr - 0x10
+
+        rtti_target, _ = self.resolve_pointer_at(
+            header_vaddr + 8, vaddr_to_file_offset(header_vaddr + 8) if vaddr_to_file_offset else None
+        )
+
+        if slot_offset is not None:
+            slot_vaddr = vptr_vaddr + slot_offset
+            foff = vaddr_to_file_offset(slot_vaddr) if vaddr_to_file_offset else None
+            target, src = self.resolve_pointer_at(slot_vaddr, foff)
+            return {
+                "vtable_header_rva": hex(header_vaddr),
+                "vptr_address_point_rva": hex(vptr_vaddr),
+                "rtti_rva": hex(rtti_target) if rtti_target else None,
+                "requested_slot_offset": hex(slot_offset),
+                "slot_index": slot_offset // 8,
+                "target_function_rva": hex(target),
+                "resolution_source": src,
+            }
+
+        slots = []
+        for idx in range(max_slots):
+            off = idx * 8
+            sv = vptr_vaddr + off
+            foff = vaddr_to_file_offset(sv) if vaddr_to_file_offset else None
+            target, src = self.resolve_pointer_at(sv, foff)
+            if not (self.text_start <= target < self.text_end):
+                break
+            slots.append({
+                "slot_index": idx,
+                "byte_offset": hex(off),
+                "slot_rva": hex(sv),
+                "target_function_rva": hex(target),
+                "source": src,
+            })
+        return {
+            "vtable_header_rva": hex(header_vaddr),
+            "vptr_address_point_rva": hex(vptr_vaddr),
+            "rtti_rva": hex(rtti_target) if rtti_target else None,
+            "slot_count": len(slots),
+            "slots": slots,
+        }
+
+
 class ElfVTableRecoveryEngine:
     """Fast in-memory parser and indexer for ELF64 dynamic relocations and C++ vtables."""
 
@@ -69,8 +191,9 @@ class ElfVTableRecoveryEngine:
         self.text_ranges: List[Tuple[int, int]] = []
         self.ro_ranges: List[Tuple[int, int]] = []
 
-        self._parse_elf()
-        self._index_vtables()
+        if len(self.data) >= 64 and self.data[:4] == b"\x7fELF":
+            self.parse_rela_dyn()
+            self.detect_vtable_runs()
 
     @classmethod
     def from_file(cls, path: str | Path, base_rva: int = 0) -> ElfVTableRecoveryEngine:
@@ -78,15 +201,16 @@ class ElfVTableRecoveryEngine:
             data = f.read()
         return cls(data, base_rva=base_rva)
 
-    def _parse_elf(self) -> None:
-        """Parses ELF program and section headers to extract .rela.dyn and segment boundaries."""
-        if len(self.data) < 64 or self.data[:4] != b"\x7fELF":
+    def parse_rela_dyn(self) -> None:
+        """Parses program headers, dynamic segment, and section headers for relocations."""
+        if len(self.data) < 64:
             return
 
         ei_class = self.data[4]
-        if ei_class != 2:  # Only ELF64
+        if ei_class != 2:  # Not ELF64
             return
 
+        # ELF64 Header fields
         e_phoff = struct.unpack_from("<Q", self.data, 32)[0]
         e_shoff = struct.unpack_from("<Q", self.data, 40)[0]
         e_phentsize = struct.unpack_from("<H", self.data, 54)[0]
@@ -95,7 +219,6 @@ class ElfVTableRecoveryEngine:
         e_shnum = struct.unpack_from("<H", self.data, 60)[0]
         e_shstrndx = struct.unpack_from("<H", self.data, 62)[0]
 
-        # 1. Parse Program Headers for PT_LOAD and PT_DYNAMIC
         rela_offset = 0
         rela_size = 0
         rela_ent = 24
@@ -141,7 +264,7 @@ class ElfVTableRecoveryEngine:
                     if s_off + 64 > len(self.data):
                         break
                     (
-                        sh_name_idx,
+                        sh_name,
                         sh_type,
                         sh_flags,
                         sh_addr,
@@ -153,10 +276,9 @@ class ElfVTableRecoveryEngine:
                         sh_entsize,
                     ) = struct.unpack_from("<IIQQQQIIQQ", self.data, s_off)
 
-                    # Extract section name
-                    name_end = shstrtab.find(b"\x00", sh_name_idx)
+                    name_end = shstrtab.find(b"\x00", sh_name)
                     sec_name = (
-                        shstrtab[sh_name_idx:name_end].decode("latin-1")
+                        shstrtab[sh_name:name_end].decode("latin-1", errors="replace")
                         if name_end != -1
                         else ""
                     )
@@ -178,14 +300,15 @@ class ElfVTableRecoveryEngine:
         for cur in range(offset, end - entsize + 1, entsize):
             r_offset, r_info, r_addend = struct.unpack_from("<QQq", self.data, cur)
             rel_type = r_info & 0xFFFFFFFF
-            if rel_type in (R_AARCH64_RELATIVE, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT):
+            if rel_type in (R_AARCH64_RELATIVE, R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT):
                 self.relocs[r_offset] = r_addend
 
     def _scan_raw_rela_fallback(self) -> None:
         """Heuristic sweep for contiguous Elf64_Rela entries when section headers are absent."""
         for off in range(0, min(len(self.data) - 24, 10 * 1024 * 1024), 24):
             r_offset, r_info, r_addend = struct.unpack_from("<QQq", self.data, off)
-            if (r_info & 0xFFFFFFFF) == R_AARCH64_RELATIVE:
+            rel_type = r_info & 0xFFFFFFFF
+            if rel_type in (R_AARCH64_RELATIVE, R_AARCH64_ABS64):
                 if 0 < r_offset < 0x10000000 and 0 < r_addend < 0x10000000:
                     self.relocs[r_offset] = r_addend
 
@@ -193,10 +316,11 @@ class ElfVTableRecoveryEngine:
         """Checks if a target address falls in executable code."""
         if self.text_ranges:
             return any(start <= target < end for start, end in self.text_ranges)
+        # Heuristic fallback: target is reasonably non-zero
         return target > 0
 
-    def _index_vtables(self) -> None:
-        """Finds candidate C++ virtual tables from contiguous runs of relative relocations."""
+    def detect_vtable_runs(self) -> None:
+        """Groups contiguous relocations in .data.rel.ro into candidate virtual method tables."""
         if not self.relocs:
             return
 

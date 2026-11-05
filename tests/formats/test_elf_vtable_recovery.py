@@ -6,6 +6,7 @@ import struct
 
 from superghidra.formats.elf_vtable_recovery import (
     R_AARCH64_RELATIVE,
+    Elf64AArch64VTableResolver,
     ElfVTableRecoveryEngine,
 )
 
@@ -86,3 +87,29 @@ def test_elf_vtable_recovery():
     assert "struct" in c_struct
     assert "slot_0x0_target_0x1050" in c_struct
     assert "slot_0x8_target_0x1080" in c_struct
+
+
+def test_elf64_aarch64_vtable_resolver():
+    data = _build_synthetic_elf()
+    # rela_offset is 0x200, size is 3 * 24 = 72
+    resolver = Elf64AArch64VTableResolver(
+        elf_bytes=data,
+        rela_dyn_offset=0x200,
+        rela_dyn_size=72,
+        text_range=(0x1000, 0x2000),
+    )
+    ptr, src = resolver.resolve_pointer_at(0x3100)
+    assert ptr == 0x1050
+    assert "rela.dyn" in src
+
+    # Test resolve_vtable for a single slot (+0x8)
+    res_slot = resolver.resolve_vtable(0x3100, slot_offset=0x8)
+    assert res_slot["target_function_rva"] == hex(0x1080)
+    assert res_slot["slot_index"] == 1
+
+    # Test resolve_vtable for all slots
+    res_all = resolver.resolve_vtable(0x3100)
+    assert res_all["slot_count"] == 3
+    assert res_all["slots"][0]["target_function_rva"] == hex(0x1050)
+    assert res_all["slots"][1]["target_function_rva"] == hex(0x1080)
+    assert res_all["slots"][2]["target_function_rva"] == hex(0x10B0)

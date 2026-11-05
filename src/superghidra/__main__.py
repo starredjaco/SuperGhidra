@@ -156,6 +156,52 @@ def create_parser() -> argparse.ArgumentParser:
     batch_parser.add_argument("pipeline_json", type=Path, help="Path to pipeline JSON file")
     batch_parser.add_argument("binary", type=Path, help="Path to binary")
 
+    # Subcommand: vtable-lookup
+    vt_lookup_parser = subparsers.add_parser("vtable-lookup", help="Recover and inspect stripped ELF vtables")
+    vt_lookup_parser.add_argument("binary", type=Path, help="Path to ELF binary")
+    vt_lookup_parser.add_argument("--vtable-rva", type=lambda x: int(x, 0), help="VTable RVA to inspect")
+    vt_lookup_parser.add_argument("--slot", type=lambda x: int(x, 0), default=None, help="Virtual method slot offset (e.g. 0x88)")
+    vt_lookup_parser.add_argument("-o", "--output", type=Path, help="Output JSON path")
+
+    # Subcommand: insn-scan
+    insn_scan_parser = subparsers.add_parser("insn-scan", help="Vectorized AArch64 instruction scanner for struct offsets and immediates")
+    insn_scan_parser.add_argument("binary", type=Path, help="Path to binary")
+    insn_scan_parser.add_argument("--offset", type=lambda x: int(x, 0), default=None, help="Struct memory offset (e.g. 0x124)")
+    insn_scan_parser.add_argument("--access-type", choices=["read", "write", "any"], default="any", help="Access type")
+    insn_scan_parser.add_argument("--immediate", type=lambda x: int(x, 0), default=None, help="Numeric immediate constant (e.g. 792)")
+    insn_scan_parser.add_argument("--mnemonic", default=None, help="Instruction mnemonic filter (e.g. strb)")
+
+    # Subcommand: resolve-xref
+    resolve_xref_parser = subparsers.add_parser("resolve-xref", help="Resolve branch or ADRP + ADD/LDR xref at instruction address")
+    resolve_xref_parser.add_argument("binary", type=Path, help="Path to binary")
+    resolve_xref_parser.add_argument("address", type=lambda x: int(x, 0), help="Target instruction RVA")
+    resolve_xref_parser.add_argument("--lookahead", type=int, default=8, help="Lookahead instruction limit (default: 8)")
+
+    # Subcommand: disasm-batch
+    disasm_batch_parser = subparsers.add_parser("disasm-batch", help="Batch disassemble instruction words or RVAs")
+    disasm_batch_parser.add_argument("--words", nargs="+", type=lambda x: int(x, 0), help="Raw instruction words")
+    disasm_batch_parser.add_argument("--binary", type=Path, default=None, help="Path to binary")
+    disasm_batch_parser.add_argument("--rvas", nargs="+", type=lambda x: int(x, 0), help="RVAs to disassemble")
+
+    # Subcommand: dump-register
+    dump_reg_parser = subparsers.add_parser("dump-register", help="Register a memory dump")
+    dump_reg_parser.add_argument("--id", required=True, dest="dump_id", help="Dump identifier")
+    dump_reg_parser.add_argument("--module-base", required=True, type=lambda x: int(x, 0), help="Module base address")
+    dump_reg_parser.add_argument("--segment", nargs=2, action="append", metavar=("BASE_VA", "FILE_PATH"), help="Segment base VA and file path")
+
+    # Subcommand: dump-inspect
+    dump_insp_parser = subparsers.add_parser("dump-inspect", help="Inspect live heap object in a registered memory dump")
+    dump_insp_parser.add_argument("--id", required=True, dest="dump_id", help="Dump identifier")
+    dump_insp_parser.add_argument("--addr", required=True, type=lambda x: int(x, 0), help="Object virtual address")
+
+    # Subcommand: concolic-trace
+    concolic_trace_parser = subparsers.add_parser("concolic-trace", help="Run concolic PRNG draw evaluation")
+    concolic_trace_parser.add_argument("binary", type=Path, help="Path to binary")
+    concolic_trace_parser.add_argument("--entry", required=True, type=lambda x: int(x, 0), help="Entry function RVA")
+    concolic_trace_parser.add_argument("--addr", required=True, type=lambda x: int(x, 0), help="Object address")
+    concolic_trace_parser.add_argument("--id", dest="dump_id", default="default", help="Dump identifier")
+    concolic_trace_parser.add_argument("--prng", nargs="+", type=lambda x: int(x, 0), default=[], help="PRNG function RVAs")
+
     # Subcommand: decompile-all
     decompile_all_parser = subparsers.add_parser("decompile-all", help="Crash-resumable batch compilable decompilation export")
     decompile_all_parser.add_argument("binary", type=Path, help="Path to binary to decompile")
@@ -824,6 +870,69 @@ def cmd_batch(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_resolve_xref(args: argparse.Namespace) -> int:
+    from superghidra.lifters.aarch64_decode import resolve_arm64_xref_at
+    if not args.binary.is_file():
+        print(f"Error: binary file not found: {args.binary}", file=sys.stderr)
+        return 1
+    data = args.binary.read_bytes()
+    res = resolve_arm64_xref_at(data, text_base_rva=0, insn_rva=args.address, lookahead_insns=args.lookahead)
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def cmd_disasm_batch(args: argparse.Namespace) -> int:
+    from superghidra.lifters.aarch64_decode import disassemble_batch
+    if args.words:
+        res = disassemble_batch(raw_words=args.words)
+        print(json.dumps(res, indent=2))
+        return 0
+    if args.binary and args.binary.is_file():
+        data = args.binary.read_bytes()
+        res = disassemble_batch(data, text_base_rva=0, addresses=args.rvas)
+        print(json.dumps(res, indent=2))
+        return 0
+    print("Error: either --words or --binary with --rvas must be specified", file=sys.stderr)
+    return 1
+
+
+def cmd_dump_register(args: argparse.Namespace) -> int:
+    from superghidra.integrations.dump_overlay import LiveDumpOverlayManager
+    mgr = LiveDumpOverlayManager()
+    segs = [(int(va, 0), path) for va, path in (args.segment or [])]
+    res = mgr.register_dump(args.dump_id, args.module_base, segs)
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def cmd_dump_inspect(args: argparse.Namespace) -> int:
+    from superghidra.integrations.dump_overlay import LiveDumpOverlayManager
+    mgr = LiveDumpOverlayManager()
+    res = mgr.inspect_live_object(args.dump_id, args.addr)
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def cmd_concolic_trace(args: argparse.Namespace) -> int:
+    from superghidra.integrations.dump_overlay import LiveDumpOverlayManager
+    from superghidra.integrations.trace_slicer import evaluate_function_on_dump
+    if not args.binary.is_file():
+        print(f"Error: binary file not found: {args.binary}", file=sys.stderr)
+        return 1
+    mgr = LiveDumpOverlayManager()
+    data = args.binary.read_bytes()
+    res = evaluate_function_on_dump(
+        dump_manager=mgr,
+        dump_id=args.dump_id or "default",
+        entry_rva=args.entry,
+        object_addr=args.addr,
+        text_bytes=data,
+        prng_rvas=args.prng,
+    )
+    print(json.dumps(res, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = create_parser()
     args = parser.parse_args(argv)
@@ -863,10 +972,20 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_trace_values(args)
     elif args.command == "decompile-all":
         return cmd_decompile_all(args)
-    elif args.command == "elf-vtable":
+    elif args.command in ("elf-vtable", "vtable-lookup"):
         return cmd_elf_vtable(args)
-    elif args.command == "scan-insns":
+    elif args.command in ("scan-insns", "insn-scan"):
         return cmd_scan_insns(args)
+    elif args.command == "resolve-xref":
+        return cmd_resolve_xref(args)
+    elif args.command == "disasm-batch":
+        return cmd_disasm_batch(args)
+    elif args.command == "dump-register":
+        return cmd_dump_register(args)
+    elif args.command == "dump-inspect":
+        return cmd_dump_inspect(args)
+    elif args.command == "concolic-trace":
+        return cmd_concolic_trace(args)
     elif args.command == "batch":
         return cmd_batch(args)
     else:

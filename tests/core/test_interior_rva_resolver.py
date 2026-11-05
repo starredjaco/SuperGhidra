@@ -5,6 +5,8 @@ test_interior_rva_resolver.py - Unit tests for four-stage address normalizer and
 import struct
 
 from superghidra.core.interior_rva_resolver import (
+    AArch64InteriorResolver,
+    annotate_decompiled_c,
     resolve_interior_rva,
 )
 
@@ -62,3 +64,28 @@ def test_tier4_basic_block_slice():
     assert ctx.resolution_method == "basic_block_slice"
     assert ctx.enclosing_basic_block is not None
     assert ctx.enclosing_basic_block[0] <= 0x44 < ctx.enclosing_basic_block[1]
+
+
+def test_aarch64_interior_resolver_eh_frame():
+    data = _build_test_binary()
+    resolver = AArch64InteriorResolver(text_bytes=data, text_base_rva=0x1000, eh_frame_starts=[0x1000, 0x1040])
+    target = resolver.resolve(0x1010)
+    assert target.queried_rva == 0x1010
+    assert target.entry_rva == 0x1000
+    assert target.offset_from_entry == 0x10
+    assert target.resolution_method == "eh_frame"
+    assert target.enclosing_block_start <= 0x1010 < target.enclosing_block_end
+
+
+def test_aarch64_interior_resolver_prologue_sweep():
+    data = _build_test_binary()
+    resolver = AArch64InteriorResolver(text_bytes=data, text_base_rva=0x1000, eh_frame_starts=None)
+    target = resolver.resolve(0x1010)
+    assert target.entry_rva == 0x1000
+    assert target.resolution_method == "prologue_sweep"
+
+
+def test_annotate_decompiled_c():
+    c_src = "void func() {\n    int a = 1;\n    int b = 2;\n}"
+    annotated = annotate_decompiled_c(c_src, target_rva=0x1010, entry_rva=0x1000)
+    assert "TARGET RVA 0x00001010 (+0x10)" in annotated
