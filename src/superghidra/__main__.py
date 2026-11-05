@@ -136,6 +136,26 @@ def create_parser() -> argparse.ArgumentParser:
     trace_parser.add_argument("--max-nodes", type=int, default=2500, help="Maximum def-use nodes (default: 2500)")
     trace_parser.add_argument("-o", "--output", type=Path, help="Output JSON graph file")
 
+    # Subcommand: elf-vtable
+    elf_vt_parser = subparsers.add_parser("elf-vtable", help="Recover stripped ELF AArch64 C++ vtables and relocations")
+    elf_vt_parser.add_argument("binary", type=Path, help="Path to ELF binary")
+    elf_vt_parser.add_argument("--vtable-rva", type=lambda x: int(x, 0), help="VTable RVA to inspect")
+    elf_vt_parser.add_argument("--slot", type=lambda x: int(x, 0), default=None, help="Virtual method slot offset (e.g. 0x88)")
+    elf_vt_parser.add_argument("-o", "--output", type=Path, help="Output JSON path")
+
+    # Subcommand: scan-insns
+    scan_insn_parser = subparsers.add_parser("scan-insns", help="SIMD/vectorized AArch64 instruction scanner for struct offsets and immediates")
+    scan_insn_parser.add_argument("binary", type=Path, help="Path to binary")
+    scan_insn_parser.add_argument("--offset", type=lambda x: int(x, 0), default=None, help="Struct memory offset (e.g. 0x124)")
+    scan_insn_parser.add_argument("--access-type", choices=["read", "write", "any"], default="any", help="Access type")
+    scan_insn_parser.add_argument("--immediate", type=lambda x: int(x, 0), default=None, help="Numeric immediate constant (e.g. 792)")
+    scan_insn_parser.add_argument("--mnemonic", default=None, help="Instruction mnemonic filter (e.g. strb)")
+
+    # Subcommand: batch
+    batch_parser = subparsers.add_parser("batch", help="Execute multi-query batch pipeline DSL")
+    batch_parser.add_argument("pipeline_json", type=Path, help="Path to pipeline JSON file")
+    batch_parser.add_argument("binary", type=Path, help="Path to binary")
+
     # Subcommand: decompile-all
     decompile_all_parser = subparsers.add_parser("decompile-all", help="Crash-resumable batch compilable decompilation export")
     decompile_all_parser.add_argument("binary", type=Path, help="Path to binary to decompile")
@@ -723,6 +743,87 @@ def cmd_decompile_all(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_elf_vtable(args: argparse.Namespace) -> int:
+    from superghidra.formats.elf_vtable_recovery import ElfVTableRecoveryEngine
+    if not args.binary.is_file():
+        print(f"Error: binary file not found: {args.binary}", file=sys.stderr)
+        return 1
+
+    engine = ElfVTableRecoveryEngine.from_file(args.binary)
+    print(f"Loaded {len(engine.relocs)} relocations and {len(engine.vtables)} candidate C++ vtables.")
+
+    if args.vtable_rva is not None:
+        if args.slot is not None:
+            target = engine.vtable_lookup(args.vtable_rva, args.slot)
+            print(f"VTable 0x{args.vtable_rva:x}[+{args.slot:#x}] -> Target Function: {hex(target) if target else 'None'}")
+        else:
+            vt = engine.get_vtable(args.vtable_rva)
+            if vt:
+                print(f"VTable at 0x{vt.vtable_rva:x}: {vt.slot_count} virtual slots")
+                for s in vt.slots:
+                    print(f"  +{s.slot_offset:#04x} (RVA 0x{s.slot_rva:x}) -> Target 0x{s.target_rva:x}")
+            else:
+                print(f"VTable at 0x{args.vtable_rva:x} not found.")
+
+    if args.output:
+        data = {
+            "vtable_count": len(engine.vtables),
+            "vtables": [
+                {
+                    "rva": vt.vtable_rva,
+                    "slots": [{"offset": s.slot_offset, "target": s.target_rva} for s in vt.slots],
+                }
+                for vt in engine.find_all_vtables()
+            ],
+        }
+        args.output.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        print(f"Saved vtable report to {args.output}")
+    return 0
+
+
+def cmd_scan_insns(args: argparse.Namespace) -> int:
+    from superghidra.acceleration.scan_arm64_insns import scan_arm64_insns
+    if not args.binary.is_file():
+        print(f"Error: binary file not found: {args.binary}", file=sys.stderr)
+        return 1
+
+    data = args.binary.read_bytes()
+    matches = scan_arm64_insns(
+        data,
+        mem_offset=args.offset,
+        access_type=args.access_type,
+        immediate=args.immediate,
+        mnemonic=args.mnemonic,
+    )
+    print(f"Found {len(matches)} matching instructions:")
+    for m in matches[:50]:
+        print(f"  0x{m.rva:08x}: {m.mnemonic:<8} {m.operands}")
+    if len(matches) > 50:
+        print(f"  ... and {len(matches) - 50} more matches.")
+    return 0
+
+
+def cmd_batch(args: argparse.Namespace) -> int:
+    from superghidra.core.batch_dsl import BatchPipelineExecutor
+    if not args.binary.is_file() or not args.pipeline_json.is_file():
+        print("Error: binary or pipeline JSON file not found", file=sys.stderr)
+        return 1
+
+    pipeline_data = json.loads(args.pipeline_json.read_text(encoding="utf-8"))
+    pipeline = pipeline_data.get("pipeline", [])
+    binary_data = args.binary.read_bytes()
+
+    executor = BatchPipelineExecutor(binary_data)
+    res = executor.execute_pipeline(pipeline)
+    if res.success:
+        print(f"Pipeline executed successfully ({len(res.results)} steps completed).")
+        print(json.dumps(res.results, default=lambda o: getattr(o, "__dict__", str(o)), indent=2))
+        return 0
+    else:
+        print(f"Pipeline error: {res.error}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = create_parser()
     args = parser.parse_args(argv)
@@ -762,6 +863,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_trace_values(args)
     elif args.command == "decompile-all":
         return cmd_decompile_all(args)
+    elif args.command == "elf-vtable":
+        return cmd_elf_vtable(args)
+    elif args.command == "scan-insns":
+        return cmd_scan_insns(args)
+    elif args.command == "batch":
+        return cmd_batch(args)
     else:
         parser.print_help()
         return 0
